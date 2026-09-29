@@ -2,6 +2,8 @@ module.exports = (sequelize, DataTypes) => sequelize.define("User", {
   id: { type: DataTypes.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
   username: { type: DataTypes.STRING(100), allowNull: false, unique: true },
   password_hash: { type: DataTypes.STRING(255), allowNull: false },
+  auth_version: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0 },
+  google_sub: { type: DataTypes.STRING(255), allowNull: true, unique: true },
   full_name: { type: DataTypes.STRING(150), allowNull: false },
   role_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
   unit_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
