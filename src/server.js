@@ -6,7 +6,7 @@ const port = Number(process.env.PORT || 5000);
 
 async function start() {
   await sequelize.authenticate();
-  const server = app.listen(port, () => console.log(`Backend listening on port ${port}`));
+  const server = app.listen(port, process.env.HOST || '127.0.0.1', () => console.log(`Backend listening on port ${port}`));
   const shutdown = async () => {
     server.close(async () => {
       await sequelize.close();
