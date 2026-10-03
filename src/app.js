@@ -4,6 +4,7 @@ const healthRoutes = require("./routes/health.routes");
 const authRoutes = require("./routes/auth.routes");
 const usersRoutes = require("./routes/users.routes");
 const materialMasterRoutes = require('./routes/material-master.routes');
+const stockRoutes = require('./routes/stock.routes');
 const { notFound, errorHandler } = require("./middlewares/error.middleware");
 
 const app = express();
@@ -14,6 +15,7 @@ app.use("/api/v1", healthRoutes);
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", usersRoutes);
 app.use('/api/v1/catalog', materialMasterRoutes);
+app.use('/api/v1/stock', stockRoutes);
 app.use(notFound);
 app.use(errorHandler);
 
