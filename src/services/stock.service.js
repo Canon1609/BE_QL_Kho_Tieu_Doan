@@ -1,6 +1,7 @@
 const { Op, UniqueConstraintError, ForeignKeyConstraintError } = require('sequelize');
 const { sequelize, StockReceipt: Receipt, StockReceiptItem: Item, StockLedgerEntry: Ledger, Material, MaterialSource: Source, ConditionLevel: Condition, Unit } = require('../models');
 const ApiError = require('../utils/ApiError');
+const { legacyLocation, holdingWhere } = require('./location.service');
 const fail = (status, message) => { throw new ApiError(status, message); };
 const simple = (model, as) => ({ model, as, attributes: ['id', 'code', 'name'] });
 const itemIncludes = [simple(Material, 'material'), simple(Source, 'source'), simple(Condition, 'condition')];
@@ -90,6 +91,7 @@ async function post(id, user) {
       await validateItems(items, transaction);
       const unit = await Unit.findOne({ where: { code: 'BATTALION_5', type: 'BATTALION', is_active: true }, transaction });
       if (!unit || String(unit.id) !== String(user.unit_id)) fail(403, 'Forbidden');
+      const location = await legacyLocation(unit.id, transaction);
       // Serialize EVERY posting for a material/location on the material row, not just
       // the receipt header. Sorted order avoids cycles for multi-material receipts.
       // A locking ledger read is a current read under MySQL REPEATABLE READ (a
@@ -98,7 +100,7 @@ async function post(id, user) {
       for (const materialId of materialIds) {
         const material = await Material.findByPk(materialId, { transaction, lock: transaction.LOCK.UPDATE });
         if (row.receipt_type === 'OPENING_BALANCE') {
-          const existing = await Ledger.findOne({ where: { material_id: materialId, unit_id: unit.id },
+          const existing = await Ledger.findOne({ where: { material_id: materialId, ...holdingWhere([String(location.id)], unit.id) },
             transaction, lock: transaction.LOCK.UPDATE });
           if (existing) fail(409, `Không thể ghi sổ tồn đầu kỳ vì vật chất ${material.name} đã có phát sinh kho.`);
         }
@@ -107,7 +109,7 @@ async function post(id, user) {
       // comparison: a backdated opening cannot precede already-posted movements.
       const now = new Date();
       for (const item of items) {
-        await Ledger.create({ material_id: item.material_id, unit_id: unit.id, source_id: item.source_id,
+        await Ledger.create({ material_id: item.material_id, unit_id: unit.id, location_id: location.id, source_id: item.source_id,
           condition_id: item.condition_id, transaction_type: row.receipt_type, quantity_delta: item.quantity,
           reference_type: 'STOCK_RECEIPT', reference_id: row.id, receipt_item_id: item.id,
           occurred_at: now, created_by: user.id }, { transaction });
@@ -128,15 +130,17 @@ async function list(q) {
   return { items: rows.map(present), total: count, page, limit };
 }
 async function ledger(q) {
-  const where = { unit_id: q.unitId };
+  const location = await legacyLocation(q.unitId);
+  const where = holdingWhere([String(location.id)], q.unitId);
   if (q.material_id) where.material_id = q.material_id;
   const page = Number(q.page || 1), limit = 20;
   const { rows, count } = await Ledger.findAndCountAll({ where, include: [simple(Material, 'material'), simple(Source, 'source'), simple(Condition, 'condition')], order: [['id', 'DESC']], limit, offset: (page - 1) * limit });
   return { items: rows.map(present), total: count, page, limit };
 }
 async function balance(q) {
-  // No material.quantity or cache. Group only entries at the battalion location; dimensions are disjoint.
-  const where = { unit_id: q.unitId };
+  // No material.quantity or cache. Each ledger entry contributes once at its holding location.
+  const location = await legacyLocation(q.unitId);
+  const where = holdingWhere([String(location.id)], q.unitId);
   if (q.material_id) where.material_id = q.material_id;
   const rows = await Ledger.findAll({ where, attributes: ['material_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']],
     group: ['material_id', 'source_id', 'condition_id'], raw: true });

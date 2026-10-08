@@ -1,4 +1,4 @@
-module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit, User }) => {
+module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit, User, Location }) => {
   const StockReceipt = sequelize.define('StockReceipt', {
     id: { type: D.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
     code: { type: D.STRING(64), allowNull: false, unique: true },
@@ -15,11 +15,12 @@ module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit
   }, { tableName: 'stock_receipt_items' });
   const StockLedgerEntry = sequelize.define('StockLedgerEntry', {
     id: { type: D.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
-    material_id: { type: D.BIGINT.UNSIGNED, allowNull: false }, unit_id: { type: D.BIGINT.UNSIGNED, allowNull: false },
+    material_id: { type: D.BIGINT.UNSIGNED, allowNull: false }, unit_id: { type: D.BIGINT.UNSIGNED, allowNull: false }, location_id: D.BIGINT.UNSIGNED,
     source_id: { type: D.BIGINT.UNSIGNED, allowNull: false }, condition_id: D.BIGINT.UNSIGNED,
     transaction_type: { type: D.STRING(64), allowNull: false }, quantity_delta: { type: D.BIGINT, allowNull: false },
     reference_type: { type: D.STRING(64), allowNull: false }, reference_id: { type: D.BIGINT.UNSIGNED, allowNull: false },
     receipt_item_id: { type: D.BIGINT.UNSIGNED, unique: true },
+    transfer_item_id: D.BIGINT.UNSIGNED, transfer_side: D.STRING(8),
     occurred_at: { type: D.DATE, allowNull: false }, created_by: { type: D.BIGINT.UNSIGNED, allowNull: false },
   }, { tableName: 'stock_ledger_entries' });
   const restrict = { onDelete: 'RESTRICT' };
@@ -31,7 +32,8 @@ module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit
     Model.belongsTo(ConditionLevel, { foreignKey: 'condition_id', as: 'condition', ...restrict });
   }
   StockReceipt.belongsTo(MaterialSource, { foreignKey: 'source_id', as: 'source', ...restrict });
-  StockLedgerEntry.belongsTo(Unit, { foreignKey: 'unit_id', as: 'location', ...restrict });
+  StockLedgerEntry.belongsTo(Unit, { foreignKey: 'unit_id', as: 'legacyUnit', ...restrict });
+  StockLedgerEntry.belongsTo(Location, { foreignKey: 'location_id', as: 'location', ...restrict });
   StockReceipt.belongsTo(User, { foreignKey: 'created_by', as: 'creator', ...restrict });
   StockReceipt.belongsTo(User, { foreignKey: 'posted_by', as: 'poster', ...restrict });
   StockLedgerEntry.belongsTo(StockReceiptItem, { foreignKey: 'receipt_item_id', as: 'receiptItem', ...restrict });
