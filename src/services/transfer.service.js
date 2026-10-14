@@ -1,8 +1,8 @@
 const { Op, UniqueConstraintError, ForeignKeyConstraintError } = require('sequelize');
-const { sequelize, StockTransfer: Transfer, StockTransferItem: Item, StockLedgerEntry: Ledger, Material, MaterialSource: Source, ConditionLevel: Condition, Unit, MaterialCategory, UnitOfMeasure } = require('../models');
+const { sequelize, StockTransfer: Transfer, StockTransferItem: Item, StockLedgerEntry: Ledger, Material, MaterialSource: Source, ConditionLevel: Condition, Unit, Location, MaterialCategory, UnitOfMeasure } = require('../models');
 const { canAccessUnit } = require('./unitScope.service');
 const ApiError = require('../utils/ApiError');
-const { legacyLocation, unitHoldingIds, holdingWhere } = require('./location.service');
+const { legacyLocation, holdingWhere } = require('./location.service');
 const fail = (status, message) => { throw new ApiError(status, message); };
 const ref = (model, as) => ({ model, as, attributes: ['id', 'code', 'name'] });
 const parts = [ref(Material, 'material'), ref(Source, 'source'), ref(Condition, 'condition')];
@@ -42,6 +42,18 @@ async function get(id) {
   if (!row) fail(404, 'Không tìm thấy phiếu');
   return plain(row);
 }
+async function holding(id, transaction) {
+  const location = await Location.findByPk(id, { transaction });
+  if (!location?.is_active || !location.is_stock_holding) fail(400, 'Nơi lưu giữ không hợp lệ');
+  let parent = location;
+  const seen = new Set();
+  while (parent) {
+    if (seen.has(String(parent.id)) || !parent.is_active) fail(400, 'Cây địa điểm không hợp lệ');
+    seen.add(String(parent.id));
+    parent = parent.parent_location_id ? await Location.findByPk(parent.parent_location_id, { transaction }) : null;
+  }
+  return location;
+}
 async function save(id, data, user) {
   return safe(async () => {
     const transferId = await sequelize.transaction(async transaction => {
@@ -53,15 +65,24 @@ async function save(id, data, user) {
         if (row.status !== 'DRAFT') fail(409, 'Phiếu đã ghi sổ; không thể sửa');
         if (row.transfer_type !== data.transfer_type) fail(400, 'Không thể đổi loại phiếu');
       }
-      await company(data.company_unit_id, user, transaction);
-      const warehouseLocation = await legacyLocation(warehouse.id, transaction);
-      const companyLocation = await legacyLocation(data.company_unit_id, transaction);
+      if (data.transfer_type === 'INTERNAL_TRANSFER') {
+        if (!await canAccessUnit(user, data.company_unit_id)) fail(403, 'Forbidden');
+        const unit = await Unit.findByPk(data.company_unit_id, { transaction });
+        if (!unit?.is_active || !['COMPANY', 'BATTALION'].includes(unit.type)) fail(400, 'Đơn vị không hợp lệ');
+        await holding(data.from_location_id, transaction);
+        await holding(data.to_location_id, transaction);
+        if (String(data.from_location_id) === String(data.to_location_id)) fail(400, 'Nơi chuyển và nơi nhận phải khác nhau');
+      } else await company(data.company_unit_id, user, transaction);
+      const warehouseLocation = data.transfer_type === 'INTERNAL_TRANSFER' ? null : await legacyLocation(warehouse.id, transaction);
+      const companyLocation = data.transfer_type === 'INTERNAL_TRANSFER' ? null : await legacyLocation(data.company_unit_id, transaction);
+      const destination = data.transfer_type === 'ISSUE' && data.to_location_id ? await holding(data.to_location_id, transaction) : companyLocation;
+      if (data.transfer_type === 'ISSUE' && destination.type !== 'ROOM' && (destination.type !== 'COMPANY_STORE' || String(destination.owner_unit_id) !== String(data.company_unit_id))) fail(400, 'Nơi nhận phải là phòng hoặc Kho Đại đội nhận');
       await validateItems(data.items, transaction);
       const header = { code: data.code, transfer_type: data.transfer_type, transfer_date: data.transfer_date,
         from_unit_id: data.transfer_type === 'ISSUE' ? warehouse.id : data.company_unit_id,
-        to_unit_id: data.transfer_type === 'ISSUE' ? data.company_unit_id : warehouse.id,
-        from_location_id: data.transfer_type === 'ISSUE' ? warehouseLocation.id : companyLocation.id,
-        to_location_id: data.transfer_type === 'ISSUE' ? companyLocation.id : warehouseLocation.id,
+        to_unit_id: data.transfer_type === 'RECALL' ? warehouse.id : data.company_unit_id,
+        from_location_id: data.transfer_type === 'INTERNAL_TRANSFER' ? data.from_location_id : data.transfer_type === 'ISSUE' ? warehouseLocation.id : companyLocation.id,
+        to_location_id: data.transfer_type === 'INTERNAL_TRANSFER' ? data.to_location_id : data.transfer_type === 'ISSUE' ? destination.id : warehouseLocation.id,
         document_no: data.document_no || null, note: data.note || null };
       if (row) {
         await row.update(header, { transaction });
@@ -90,13 +111,22 @@ async function post(id, user) {
       const row = await Transfer.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
       if (!row) fail(404, 'Không tìm thấy phiếu');
       if (row.status !== 'DRAFT') fail(409, 'Phiếu đã ghi sổ; không thể xác nhận lại');
+      const internal = row.transfer_type === 'INTERNAL_TRANSFER';
       const companyId = row.transfer_type === 'ISSUE' ? row.to_unit_id : row.from_unit_id;
-      if (!['ISSUE', 'RECALL'].includes(row.transfer_type) || String(row.transfer_type === 'ISSUE' ? row.from_unit_id : row.to_unit_id) !== String(warehouse.id)) fail(400, 'Vị trí phiếu không hợp lệ');
-      await company(companyId, user, transaction);
-      const fromLocation = await legacyLocation(row.from_unit_id, transaction);
-      const toLocation = await legacyLocation(row.to_unit_id, transaction);
-      if (row.from_location_id && String(row.from_location_id) !== String(fromLocation.id) ||
-          row.to_location_id && String(row.to_location_id) !== String(toLocation.id)) fail(409, 'Vị trí phiếu không khớp đơn vị');
+      if (internal) {
+        if (String(row.from_unit_id) !== String(row.to_unit_id) || !await canAccessUnit(user, row.from_unit_id)) fail(403, 'Forbidden');
+        const unit = await Unit.findByPk(row.from_unit_id, { transaction });
+        if (!unit?.is_active) fail(409, 'Đơn vị đã ngừng hoạt động');
+      } else {
+        if (!['ISSUE', 'RECALL'].includes(row.transfer_type) || String(row.transfer_type === 'ISSUE' ? row.from_unit_id : row.to_unit_id) !== String(warehouse.id)) fail(400, 'Vị trí phiếu không hợp lệ');
+        await company(companyId, user, transaction);
+      }
+      const fromLocation = internal ? await holding(row.from_location_id, transaction) : await legacyLocation(row.from_unit_id, transaction);
+      const toLocation = internal || row.transfer_type === 'ISSUE' ? await holding(row.to_location_id || (await legacyLocation(row.to_unit_id, transaction)).id, transaction) : await legacyLocation(row.to_unit_id, transaction);
+      if (row.transfer_type === 'ISSUE' && toLocation.type !== 'ROOM' && (toLocation.type !== 'COMPANY_STORE' || String(toLocation.owner_unit_id) !== String(companyId))) fail(409, 'Nơi nhận không còn hợp lệ');
+      if (String(fromLocation.id) === String(toLocation.id)) fail(409, 'Nơi chuyển và nơi nhận phải khác nhau');
+      if (!internal && (row.from_location_id && String(row.from_location_id) !== String(fromLocation.id) ||
+          row.transfer_type === 'RECALL' && row.to_location_id && String(row.to_location_id) !== String(toLocation.id))) fail(409, 'Vị trí phiếu không khớp đơn vị');
       const items = await Item.findAll({ where: { transfer_id: id }, transaction, order: [['id', 'ASC']] });
       if (!items.length) fail(400, 'Phiếu phải có ít nhất một dòng');
       await validateItems(items, transaction);
@@ -144,13 +174,14 @@ async function assets(unitId, user, q) {
   if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId);
   if (!unit || unit.type !== 'COMPANY' || !unit.is_active) fail(403, 'Forbidden');
-  const locationIds = await unitHoldingIds(unitId);
-  const rows = await Ledger.findAll({ where: { ...holdingWhere(locationIds, unitId), ...(q.material_id ? { material_id: q.material_id } : {}) },
+  const rows = await Ledger.findAll({ where: { unit_id: unitId, ...(q.material_id ? { material_id: q.material_id } : {}) },
     attributes: ['material_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']],
     group: ['material_id', 'source_id', 'condition_id'], raw: true });
   const ids = [...new Set(rows.map(r => String(r.material_id)))];
   const materials = await Material.findAll({ where: { id: ids.length ? ids : [0], ...(q.search ? { [Op.or]: [{ code: { [Op.like]: `%${q.search}%` } }, { name: { [Op.like]: `%${q.search}%` } }] } : {}) },
     include: [ref(MaterialCategory, 'category'), ref(UnitOfMeasure, 'unit')], order: [['code', 'ASC']] });
+  const locationRows = await Ledger.findAll({ where: { unit_id: unitId, ...(q.material_id ? { material_id: q.material_id } : {}) }, attributes: ['material_id', 'location_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']], group: ['material_id', 'location_id', 'source_id', 'condition_id'], raw: true });
+  const locations = await Location.findAll({ where: { id: [...new Set(locationRows.map(r => r.location_id).filter(Boolean))] }, attributes: ['id', 'code', 'name', 'parent_location_id'] });
   const [sources, conditions] = await Promise.all([Source.findAll({ where: { id: [...new Set(rows.map(r => r.source_id))] } }), Condition.findAll({ where: { id: [...new Set(rows.map(r => r.condition_id).filter(Boolean))] } })]);
   return materials.map(m => {
     const breakdown = rows.filter(r => String(r.material_id) === String(m.id) && BigInt(r.quantity) !== 0n).map(r => ({
@@ -158,18 +189,19 @@ async function assets(unitId, user, q) {
       condition_id: r.condition_id ? String(r.condition_id) : null, condition: conditions.find(c => String(c.id) === String(r.condition_id))?.name || null,
       quantity: String(r.quantity),
     }));
-    return { ...plain(m), quantity: breakdown.reduce((n, b) => n + BigInt(b.quantity), 0n).toString(), breakdown };
+    return { ...plain(m), quantity: breakdown.reduce((n, b) => n + BigInt(b.quantity), 0n).toString(), breakdown,
+      locations: locationRows.filter(r => String(r.material_id) === String(m.id) && BigInt(r.quantity) > 0n).map(r => ({ location: locations.find(l => String(l.id) === String(r.location_id)) || null, quantity: String(r.quantity), source: sources.find(s => String(s.id) === String(r.source_id))?.name, condition: conditions.find(c => String(c.id) === String(r.condition_id))?.name || null })) };
   }).filter(m => m.breakdown.length > 0);
 }
 async function history(unitId, user, q) {
   if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId);
   if (!unit || unit.type !== 'COMPANY' || !unit.is_active) fail(403, 'Forbidden');
-  const locationIds = await unitHoldingIds(unitId);
-  const where = { ...holdingWhere(locationIds, unitId), reference_type: 'STOCK_TRANSFER' };
+  const where = { unit_id: unitId, reference_type: 'STOCK_TRANSFER' };
   if (q.material_id) where.material_id = q.material_id;
   const page = Number(q.page || 1), limit = 20;
   const { rows, count } = await Ledger.findAndCountAll({ where, include: parts, order: [['id', 'DESC']], limit, offset: (page - 1) * limit });
-  return { items: rows.map(plain), total: count, page, limit };
+  const places = await Location.findAll({ where: { id: [...new Set(rows.map(r => r.location_id).filter(Boolean))] }, attributes: ['id', 'code', 'name', 'parent_location_id'] });
+  return { items: rows.map(r => ({ ...plain(r), location: places.find(p => String(p.id) === String(r.location_id)) || null })), total: count, page, limit };
 }
 module.exports = { get, save, remove, post, list, units, assets, history };

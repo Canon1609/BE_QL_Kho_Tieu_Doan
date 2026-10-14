@@ -13,7 +13,7 @@ async function main() {
   const port = server.address().port;
   const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
   try {
-    const admin = await User.findOne({ where: { username: { [require('sequelize').Op.like]: 'P5_%_b' } }, order: [['id', 'DESC']] });
+    const admin = await User.findOne({ where: { username: { [require('sequelize').Op.like]: 'P5\\_%\\_b' } }, order: [['id', 'DESC']] });
     const company = await User.findOne({ where: { username: admin.username.replace(/_b$/, '_c') } });
     const material = await Material.findOne({ where: { code: admin.username.replace(/_b$/, '') } });
     const unit = await Unit.findOne({ where: { code: 'COMPANY_11' } });
@@ -85,7 +85,7 @@ async function main() {
       assert.equal(await postedRow.getByRole('button', { name: 'Xóa' }).count(), 0);
       assert.equal(await postedRow.getByRole('button', { name: 'Ghi sổ' }).count(), 0);
       await page.goto(origin + '/company/assets');
-      await page.getByRole('heading', { name: 'Tài sản đơn vị' }).waitFor();
+      await page.getByRole('heading', { name: 'Vật chất của Đại đội' }).waitFor();
       await page.getByLabel('Đại đội', { exact: false }).selectOption(String(unit.id));
       await page.getByLabel('Tìm mã / tên vật chất').fill(material.code);
       await page.getByRole('button', { name: 'Chi tiết' }).first().click();
@@ -101,7 +101,7 @@ async function main() {
       await page.getByRole('heading', { name: 'Thu hồi vật chất' }).waitFor();
       const recall = `${code}_R`;
       await page.getByLabel('Mã phiếu').fill(recall);
-      await page.getByLabel('Đại đội thu hồi từ').selectOption(String(unit.id));
+      await page.getByLabel('Đại đội chịu trách nhiệm').selectOption(String(unit.id));
       await page.getByLabel('Vật chất', { exact: false }).selectOption(String(material.id));
       await page.getByLabel('Nguồn', { exact: false }).selectOption(String(source.id));
       await page.getByLabel('Tình trạng', { exact: false }).selectOption(String(condition.id));
@@ -119,7 +119,7 @@ async function main() {
       await page.getByRole('button', { name: 'Xóa' }).first().click();
       await page.getByRole('status').getByText('Đã xóa phiếu nháp.').waitFor();
       await page.getByLabel('Mã phiếu').fill(recall);
-      await page.getByLabel('Đại đội thu hồi từ').selectOption(String(unit.id));
+      await page.getByLabel('Đại đội chịu trách nhiệm').selectOption(String(unit.id));
       await page.getByLabel('Vật chất', { exact: false }).selectOption(String(material.id));
       await page.getByLabel('Nguồn', { exact: false }).selectOption(String(source.id));
       await page.getByLabel('Tình trạng', { exact: false }).selectOption(String(condition.id));
@@ -141,7 +141,7 @@ async function main() {
       await page.getByLabel('Trạng thái').selectOption('');
       await page.getByLabel('Tìm mã / chứng từ').fill('');
       await page.getByLabel('Mã phiếu').fill(`${recall}_OVER`);
-      await page.getByLabel('Đại đội thu hồi từ').selectOption(String(unit.id));
+      await page.getByLabel('Đại đội chịu trách nhiệm').selectOption(String(unit.id));
       await page.getByLabel('Vật chất', { exact: false }).selectOption(String(material.id));
       await page.getByLabel('Nguồn', { exact: false }).selectOption(String(source.id));
       await page.getByLabel('Tình trạng', { exact: false }).selectOption(String(condition.id));
@@ -183,7 +183,7 @@ async function main() {
     await page.goto(origin + '/login');
     await page.evaluate(t => sessionStorage.setItem('access_token', t), token(company));
     await page.goto(origin + '/company/assets');
-    await page.getByRole('heading', { name: 'Tài sản đơn vị' }).waitFor();
+    await page.getByRole('heading', { name: 'Vật chất của Đại đội' }).waitFor();
     assert.equal(await page.getByRole('link', { name: 'Cấp phát' }).count(), 0);
     assert(!errors.length, JSON.stringify(errors));
     await context.close();

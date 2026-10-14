@@ -29,7 +29,7 @@ async function unitHoldingIds(unitId) {
 }
 // A null location is a pre-migration legacy entry. Never include it alongside its backfilled equivalent.
 function holdingWhere(ids, unitId) {
-  return { [Op.or]: [{ location_id: { [Op.in]: ids.length ? ids : [0] } }, { location_id: null, unit_id: unitId }] };
+  return { unit_id: unitId, [Op.or]: [{ location_id: { [Op.in]: ids.length ? ids : [0] } }, { location_id: null }] };
 }
 async function locationBalance(materialId, locationId, { descendants = false } = {}) {
   const location = await Location.findByPk(locationId);

@@ -3,7 +3,7 @@ module.exports = (sequelize, D, Unit) => {
     id: { type: D.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
     code: { type: D.STRING(64), allowNull: false, unique: true },
     name: { type: D.STRING(150), allowNull: false }, type: { type: D.STRING(64), allowNull: false },
-    parent_location_id: D.BIGINT.UNSIGNED, owner_unit_id: D.BIGINT.UNSIGNED,
+    parent_location_id: D.BIGINT.UNSIGNED, owner_unit_id: D.BIGINT.UNSIGNED, note: D.TEXT,
     is_stock_holding: { type: D.BOOLEAN, allowNull: false, defaultValue: false },
     is_active: { type: D.BOOLEAN, allowNull: false, defaultValue: true },
   }, { tableName: 'locations' });
