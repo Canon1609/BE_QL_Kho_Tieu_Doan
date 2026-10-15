@@ -5,10 +5,11 @@ const { legacyLocation, locationBalance, unitHoldingIds, holdingWhere } = requir
 const { canAccessUnit } = require('../src/services/unitScope.service');
 const { Op } = require('sequelize');
 const dbName = 'ql_kho_tieu_doan_5_phase51_accept_v2';
+const replayDb = 'ql_kho_tieu_doan_5_phase51_replay_p6';
 const ref = 'P51_ACCEPT_FIXTURE';
 const sum = rows => rows.reduce((n, r) => n + BigInt(r.quantity), 0n);
 async function main() {
-  assert.equal(process.env.DB_NAME, dbName, 'Refuse non-test DB');
+  assert([dbName, replayDb].includes(process.env.DB_NAME), 'Refuse non-test DB');
   const stage = process.argv[2]; assert(['pre', 'post'].includes(stage));
   const root = await Unit.findOne({ where: { code: 'BATTALION_5' } });
   const c11 = await Unit.findOne({ where: { code: 'COMPANY_11' } });
@@ -37,7 +38,7 @@ async function main() {
     console.log('PRE MIGRATION PASS: 500 + 150 = 650; ledger count 2; source/condition IDs', String(source.id), String(condition.id));
     return;
   }
-  const rows = await entries(); assert.equal(rows.length, 2);
+  const rows = (await entries()).filter(r => [1, 2].includes(Number(r.reference_id))); assert.equal(rows.length, 2);
   const warehouse = await legacyLocation(root.id), store = await legacyLocation(c11.id);
   assert.equal(String(rows[0].unit_id), String(root.id)); assert.equal(String(rows[1].unit_id), String(c11.id));
   assert.equal(String(rows[0].location_id), String(warehouse.id)); assert.equal(String(rows[1].location_id), String(store.id));
@@ -45,7 +46,7 @@ async function main() {
   assert.equal(rows[0].source_id, rows[1].source_id); assert.equal(rows[0].condition_id, rows[1].condition_id);
   const source = await MaterialSource.findOne(); const condition = await ConditionLevel.findOne();
   assert.equal(String(rows[0].source_id), String(source.id)); assert.equal(String(rows[0].condition_id), String(condition.id));
-  assert.equal(await Ledger.count(), 2, 'No compensating ledger');
+  assert.equal(await Ledger.count({ where: { material_id: rows[0].material_id } }), 2, 'No compensating ledger for original material');
   assert.equal(rows[0].transaction_type, 'OPENING_BALANCE'); assert.equal(rows[1].transaction_type, 'OPENING_BALANCE');
   assert.equal(rows[0].reference_type, ref); assert.equal(rows[1].reference_type, ref);
   assert.equal(sum(await locationBalance(rows[0].material_id, warehouse.id)), 500n);
@@ -56,14 +57,20 @@ async function main() {
 
   // A second material ensures the room-only total is 10 even while the 650 fixture exists.
   const originalMaterial = await Material.findByPk(rows[0].material_id);
-  const fan = await Material.create({ code: 'P51_ACCEPT_ROOM_FAN', name: 'Quạt phòng fixture', category_id: originalMaterial.category_id, unit_id: originalMaterial.unit_id });
-  const building = await Location.create({ code: 'P51_ACCEPT_BUILDING', name: 'Khu nhà học viên 1', type: 'BUILDING', parent_location_id: group.id, owner_unit_id: c11.id, is_stock_holding: false });
-  const p101 = await Location.create({ code: 'P51_ACCEPT_101', name: 'Phòng 101', type: 'ROOM', parent_location_id: building.id, owner_unit_id: c11.id, is_stock_holding: true });
-  const p102 = await Location.create({ code: 'P51_ACCEPT_102', name: 'Phòng 102', type: 'ROOM', parent_location_id: building.id, owner_unit_id: c11.id, is_stock_holding: true });
+  // Post stage may be replayed: verify existing fixture instead of inserting duplicates.
+  const [fan] = await Material.findOrCreate({ where: { code: 'P51_ACCEPT_ROOM_FAN' }, defaults: { name: 'Quạt phòng fixture', category_id: originalMaterial.category_id, unit_id: originalMaterial.unit_id } });
+  const [building] = await Location.findOrCreate({ where: { code: 'P51_ACCEPT_BUILDING' }, defaults: { name: 'Khu nhà học viên 1', type: 'BUILDING', parent_location_id: group.id, owner_unit_id: c11.id, is_stock_holding: false } });
+  const [p101] = await Location.findOrCreate({ where: { code: 'P51_ACCEPT_101' }, defaults: { name: 'Phòng 101', type: 'ROOM', parent_location_id: building.id, owner_unit_id: c11.id, is_stock_holding: true } });
+  const [p102] = await Location.findOrCreate({ where: { code: 'P51_ACCEPT_102' }, defaults: { name: 'Phòng 102', type: 'ROOM', parent_location_id: building.id, owner_unit_id: c11.id, is_stock_holding: true } });
+  assert.equal(String(building.parent_location_id), String(group.id));
+  assert.equal(String(p101.parent_location_id), String(building.id)); assert.equal(String(p102.parent_location_id), String(building.id));
   const user = await User.findOne({ where: { username: 'p51_accept_user' } });
-  for (const [room, qty, idx] of [[p101, 4, 101], [p102, 6, 102]]) await Ledger.create({ material_id: fan.id, unit_id: c11.id, location_id: room.id,
-    source_id: rows[0].source_id, condition_id: rows[0].condition_id, transaction_type: 'ROOM_FIXTURE', quantity_delta: qty,
-    reference_type: ref, reference_id: idx, occurred_at: new Date('2026-09-29T00:00:00Z'), created_by: user.id });
+  for (const [room, qty, idx] of [[p101, 4, 101], [p102, 6, 102]]) {
+    const [entry] = await Ledger.findOrCreate({ where: { reference_type: ref, reference_id: idx }, defaults: { material_id: fan.id, unit_id: c11.id, location_id: room.id,
+      source_id: rows[0].source_id, condition_id: rows[0].condition_id, transaction_type: 'ROOM_FIXTURE', quantity_delta: qty,
+      occurred_at: new Date('2026-09-29T00:00:00Z'), created_by: user.id } });
+    assert.equal(String(entry.material_id), String(fan.id)); assert.equal(String(entry.location_id), String(room.id)); assert.equal(BigInt(entry.quantity_delta), BigInt(qty));
+  }
   assert.equal(sum(await locationBalance(fan.id, p101.id)), 4n);
   assert.equal(sum(await locationBalance(fan.id, p102.id)), 6n);
   assert.equal(sum(await locationBalance(fan.id, building.id)), 0n);

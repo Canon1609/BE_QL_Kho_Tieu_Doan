@@ -107,10 +107,9 @@ async function main() {
       const form = page.locator('#transfer-editor form');
       const save = form.getByRole('button', { name: 'Lưu nháp' });
       await save.click();
-      assert.equal(await form.locator('input:invalid, select:invalid').count() > 0, true);
-      await page.getByRole('alert').getByText('Vui lòng điền các trường bắt buộc và nhập số lượng nguyên dương.').waitFor();
+      await form.getByText('Mã cần 1–64 ký tự in hoa, số, _ hoặc - (ví dụ PN_11).').waitFor();
       await page.getByLabel('Mã phiếu').fill(`${code}_${type}_UI`);
-      await page.getByLabel(type === 'ISSUE' ? 'Đại đội nhận' : 'Đại đội thu hồi từ').selectOption(String(company11.id));
+      await page.getByLabel(type === 'ISSUE' ? 'Đại đội nhận' : 'Đại đội chịu trách nhiệm').selectOption(String(company11.id));
       await page.getByLabel('Vật chất', { exact: false }).selectOption(String(material.id));
       await page.getByLabel('Nguồn', { exact: false }).selectOption(String(source.id));
       await page.getByLabel('Tình trạng', { exact: false }).selectOption(String(cond.id));
@@ -118,17 +117,16 @@ async function main() {
       for (const bad of ['0', '-1', '1.5']) {
         await quantity.fill(bad);
         await save.click();
-        assert(await quantity.evaluate(e => !e.validity.valid), `HTML quantity validation ${bad}`);
-        await page.getByRole('alert').getByText('Vui lòng điền các trường bắt buộc và nhập số lượng nguyên dương.').waitFor();
+        await form.getByText('Số lượng phải là số nguyên dương (ví dụ 5).').waitFor();
         assert.equal(await page.getByLabel('Mã phiếu').inputValue(), `${code}_${type}_UI`);
       }
       await quantity.fill('9007199254740992');
       await save.click();
-      await page.getByRole('alert').getByText('Mỗi dòng cần vật chất, nguồn và số lượng nguyên dương.').waitFor();
+      await form.getByText('Số lượng phải là số nguyên dương (ví dụ 5).').waitFor();
       await quantity.fill('1');
       await page.getByLabel('Nguồn', { exact: false }).selectOption('');
-      await save.click(); assert(await page.getByLabel('Nguồn', { exact: false }).evaluate(e => !e.validity.valid));
-      await page.getByRole('alert').getByText('Vui lòng điền các trường bắt buộc và nhập số lượng nguyên dương.').waitFor();
+      await save.click();
+      await form.getByText('Vui lòng chọn nguồn.').waitFor();
       await page.getByLabel('Nguồn', { exact: false }).selectOption(String(source.id));
       // The last item cannot be removed in UI. API validates zero-item payload independently below.
       assert(await form.getByRole('button', { name: 'Bỏ dòng' }).isDisabled());

@@ -1,7 +1,7 @@
 module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit, User, StockLedgerEntry }) => {
   const StockTransfer = sequelize.define('StockTransfer', {
     id: { type: D.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true }, code: { type: D.STRING(64), allowNull: false, unique: true },
-    transfer_type: { type: D.STRING(16), allowNull: false }, transfer_date: { type: D.DATEONLY, allowNull: false },
+    transfer_type: { type: D.STRING(32), allowNull: false }, transfer_date: { type: D.DATEONLY, allowNull: false },
     from_unit_id: { type: D.BIGINT.UNSIGNED, allowNull: false }, to_unit_id: { type: D.BIGINT.UNSIGNED, allowNull: false },
     from_location_id: D.BIGINT.UNSIGNED, to_location_id: D.BIGINT.UNSIGNED,
     status: { type: D.STRING(16), allowNull: false, defaultValue: 'DRAFT' }, document_no: D.STRING(120), note: D.TEXT,
