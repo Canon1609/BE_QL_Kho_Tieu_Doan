@@ -3,6 +3,7 @@ const { sequelize, StockTransfer: Transfer, StockTransferItem: Item, StockLedger
 const { canAccessUnit } = require('./unitScope.service');
 const ApiError = require('../utils/ApiError');
 const { legacyLocation, holdingWhere } = require('./location.service');
+const { requireBalance } = require('./borrow-balance.service');
 const fail = (status, message) => { throw new ApiError(status, message); };
 const ref = (model, as) => ({ model, as, attributes: ['id', 'code', 'name'] });
 const parts = [ref(Material, 'material'), ref(Source, 'source'), ref(Condition, 'condition')];
@@ -29,7 +30,7 @@ async function root(user, transaction) {
 async function validateItems(items, transaction) {
   const seen = new Set();
   for (const item of items) {
-    const key = `${item.material_id}:${item.source_id}:${item.condition_id || ''}`;
+    const key = `${item.material_id}:${item.source_id}:${item.condition_id || ''}:${item.borrow_line_id || ''}`;
     if (seen.has(key)) fail(400, 'Dòng vật chất/nguồn/tình trạng bị trùng');
     seen.add(key);
     const [m, s, c] = await Promise.all([Material.findByPk(item.material_id, { transaction }), Source.findByPk(item.source_id, { transaction }),
@@ -77,6 +78,18 @@ async function save(id, data, user) {
       const companyLocation = data.transfer_type === 'INTERNAL_TRANSFER' ? null : await legacyLocation(data.company_unit_id, transaction);
       const destination = data.transfer_type === 'ISSUE' && data.to_location_id ? await holding(data.to_location_id, transaction) : companyLocation;
       if (data.transfer_type === 'ISSUE' && destination.type !== 'ROOM' && (destination.type !== 'COMPANY_STORE' || String(destination.owner_unit_id) !== String(data.company_unit_id))) fail(400, 'Nơi nhận phải là phòng hoặc Kho Đại đội nhận');
+      if (data.items.some(i => i.borrow_line_id) && data.transfer_type !== 'INTERNAL_TRANSFER') fail(400, 'Chỉ điều chuyển nội bộ mới được giữ dấu vết mượn');
+      if (data.transfer_type === 'INTERNAL_TRANSFER' && data.items.some(i => i.borrow_line_id) && data.items.some(i => !i.borrow_line_id)) fail(400, 'Tách phiếu điều chuyển vật chất mượn và vật chất không ràng buộc');
+      if (data.items.some(i => i.borrow_line_id)) {
+        const { BorrowLine, BorrowRequest } = require('../models');
+        for (const item of data.items.filter(i => i.borrow_line_id)) {
+          const line = await BorrowLine.findByPk(item.borrow_line_id, { transaction });
+          const request = line && await BorrowRequest.findByPk(line.request_id, { transaction });
+          if (!line || !request || !['DELIVERED', 'PARTIAL'].includes(request.status) || String(request.company_unit_id) !== String(data.company_unit_id) ||
+            String(line.material_id) !== String(item.material_id) || String(line.source_id) !== String(item.source_id) ||
+            String(line.condition_id || '') !== String(item.condition_id || '')) fail(400, 'Dòng đang mượn không thuộc Đại đội hoặc sai nguồn/tình trạng');
+        }
+      }
       await validateItems(data.items, transaction);
       const header = { code: data.code, transfer_type: data.transfer_type, transfer_date: data.transfer_date,
         from_unit_id: data.transfer_type === 'ISSUE' ? warehouse.id : data.company_unit_id,
@@ -130,22 +143,29 @@ async function post(id, user) {
       const items = await Item.findAll({ where: { transfer_id: id }, transaction, order: [['id', 'ASC']] });
       if (!items.length) fail(400, 'Phiếu phải có ít nhất một dòng');
       await validateItems(items, transaction);
+      if (items.some(i => i.borrow_line_id)) {
+        if (items.some(i => !i.borrow_line_id)) fail(409, 'Không trộn vật chất mượn với tồn khác trên cùng phiếu');
+        if (!internal) fail(409, 'Phiếu không được dùng vật chất đang mượn');
+        const { BorrowLine, BorrowRequest } = require('../models');
+        for (const item of items.filter(i => i.borrow_line_id)) {
+          const line = await BorrowLine.findByPk(item.borrow_line_id, { transaction });
+          const request = line && await BorrowRequest.findByPk(line.request_id, { transaction });
+          if (!line || !request || !['DELIVERED', 'PARTIAL'].includes(request.status) || String(request.company_unit_id) !== String(row.from_unit_id) || String(line.material_id) !== String(item.material_id) || String(line.source_id) !== String(item.source_id) || String(line.condition_id || '') !== String(item.condition_id || '')) fail(409, 'Dòng mượn không còn hợp lệ');
+        }
+      }
       // Same material lock protocol as receipt posting. All writers lock material IDs in ascending order.
       const ids = [...new Set(items.map(i => String(i.material_id)))].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0);
       for (const materialId of ids) await Material.findByPk(materialId, { transaction, lock: transaction.LOCK.UPDATE });
       // Current locking read after acquiring the material lock: avoids stale RR snapshot and overselling.
       for (const item of items) {
-        const entries = await Ledger.findAll({ where: { material_id: item.material_id,
-          ...holdingWhere([String(fromLocation.id)], row.from_unit_id),
-          source_id: item.source_id, condition_id: item.condition_id || null }, attributes: ['quantity_delta'], transaction, lock: transaction.LOCK.UPDATE });
-        const available = entries.reduce((sum, e) => sum + BigInt(e.quantity_delta), 0n);
-        if (available < BigInt(item.quantity)) fail(409, `Không đủ tồn tại vị trí xuất theo vật chất/nguồn/tình trạng (còn ${available}).`);
+        await requireBalance({ material_id: item.material_id, source_id: item.source_id, condition_id: item.condition_id,
+          unit_id: row.from_unit_id, location_id: fromLocation.id, borrow_line_id: item.borrow_line_id || null }, item.quantity, transaction);
       }
       const now = new Date();
       for (const item of items) {
         const common = { material_id: item.material_id, source_id: item.source_id, condition_id: item.condition_id || null,
           transaction_type: row.transfer_type, reference_type: 'STOCK_TRANSFER', reference_id: row.id,
-          transfer_item_id: item.id, occurred_at: now, created_by: user.id };
+          transfer_item_id: item.id, borrow_line_id: item.borrow_line_id || null, occurred_at: now, created_by: user.id };
         await Ledger.create({ ...common, unit_id: row.from_unit_id, location_id: fromLocation.id, transfer_side: 'OUT', quantity_delta: -Number(item.quantity) }, { transaction });
         await Ledger.create({ ...common, unit_id: row.to_unit_id, location_id: toLocation.id, transfer_side: 'IN', quantity_delta: Number(item.quantity) }, { transaction });
       }
@@ -197,7 +217,7 @@ async function history(unitId, user, q) {
   if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId);
   if (!unit || unit.type !== 'COMPANY' || !unit.is_active) fail(403, 'Forbidden');
-  const where = { unit_id: unitId, reference_type: 'STOCK_TRANSFER' };
+  const where = { unit_id: unitId, reference_type: { [Op.in]: ['STOCK_TRANSFER', 'BORROW_DELIVERY', 'BORROW_RETURN'] } };
   if (q.material_id) where.material_id = q.material_id;
   const page = Number(q.page || 1), limit = 20;
   const { rows, count } = await Ledger.findAndCountAll({ where, include: parts, order: [['id', 'DESC']], limit, offset: (page - 1) * limit });

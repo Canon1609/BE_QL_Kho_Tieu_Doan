@@ -9,6 +9,7 @@ const Location = require('./location.model')(sequelize, DataTypes, Unit);
 const master = require('./material-master.model')(sequelize, DataTypes);
 const stock = require('./stock.model')(sequelize, DataTypes, { ...master, Unit, User, Location });
 const transfers = require('./transfer.model')(sequelize, DataTypes, { ...master, ...stock, Unit, User });
+const borrow = require('./borrow.model')(sequelize, DataTypes, { ...master, ...stock, ...transfers, Unit, User, Location });
 
 Role.hasMany(User, { foreignKey: "role_id", as: "users", onDelete: "RESTRICT" });
 User.belongsTo(Role, { foreignKey: "role_id", as: "role", onDelete: "RESTRICT" });
@@ -17,4 +18,4 @@ User.belongsTo(Unit, { foreignKey: "unit_id", as: "unit", onDelete: "RESTRICT" }
 Unit.belongsTo(Unit, { foreignKey: "parent_id", as: "parent", onDelete: "RESTRICT" });
 Unit.hasMany(Unit, { foreignKey: "parent_id", as: "children", onDelete: "RESTRICT" });
 
-module.exports = { sequelize, Role, Unit, User, Location, ...master, ...stock, ...transfers };
+module.exports = { sequelize, Role, Unit, User, Location, ...master, ...stock, ...transfers, ...borrow };

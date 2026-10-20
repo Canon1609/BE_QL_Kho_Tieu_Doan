@@ -1,5 +1,5 @@
 const { Op, UniqueConstraintError, ForeignKeyConstraintError } = require('sequelize');
-const { sequelize, Location, StockLedgerEntry: Ledger, StockTransfer: Transfer, Unit, Material, MaterialSource: Source, ConditionLevel: Condition } = require('../models');
+const { sequelize, Location, StockLedgerEntry: Ledger, StockTransfer: Transfer, BorrowDelivery, BorrowReturn, BorrowReturnLine, Unit, Material, MaterialSource: Source, ConditionLevel: Condition } = require('../models');
 const { descendantIds } = require('./location.service');
 const ApiError = require('../utils/ApiError');
 const { children, invalid } = require('../validators/location.validation');
@@ -27,11 +27,13 @@ async function check(data, self, transaction) {
   } else invalid({ parent_location_id: 'Vui lòng chọn địa điểm cha hợp lệ.' });
 }
 async function dependencies(id, transaction) {
-  const [children, entries, from, to] = await Promise.all([
+  const [children, entries, from, to, deliveryFrom, deliveryTo, returnTo, returnFrom] = await Promise.all([
     Location.count({ where: { parent_location_id: id }, transaction }), Ledger.count({ where: { location_id: id }, transaction }),
     Transfer.count({ where: { from_location_id: id }, transaction }), Transfer.count({ where: { to_location_id: id }, transaction }),
+    BorrowDelivery.count({ where: { from_location_id: id }, transaction }), BorrowDelivery.count({ where: { to_location_id: id }, transaction }),
+    BorrowReturn.count({ where: { to_location_id: id }, transaction }), BorrowReturnLine.count({ where: { from_location_id: id }, transaction }),
   ]);
-  return children + entries + from + to;
+  return children + entries + from + to + deliveryFrom + deliveryTo + returnTo + returnFrom;
 }
 async function save(id, data, user) {
   admin(user);

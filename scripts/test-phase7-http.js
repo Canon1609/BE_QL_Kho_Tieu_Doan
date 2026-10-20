@@ -1,0 +1,75 @@
+const assert = require('node:assert/strict');
+const jwt = require('jsonwebtoken');
+const app = require('../src/app');
+const { jwtConfig } = require('../src/services/auth.service');
+const { sequelize, Unit, User, Role, Material, MaterialCategory, UnitOfMeasure, MaterialSource, StockLedgerEntry: Ledger, Location } = require('../src/models');
+async function main() {
+  assert.equal(process.env.DB_NAME, 'ql_kho_tieu_doan_5_phase7_verify');
+  const root = await Unit.findOne({ where: { code: 'BATTALION_5' } }), co = await Unit.findOne({ where: { code: 'COMPANY_11' } }), other = await Unit.findOne({ where: { code: 'COMPANY_13' } });
+  const admin = await User.findOne({ where: { unit_id: root.id } });
+  const role = await Role.findOne({ where: { code: 'COMPANY_ADMIN' } });
+  const company = await User.create({ username: `P7H11_${Date.now()}`, full_name: 'Test Phase 7', unit_id: co.id, role_id: role.id, password_hash: 'test-only' });
+  const company13 = await User.create({ username: `P7H13_${Date.now()}`, full_name: 'Test Phase 7', unit_id: other.id, role_id: role.id, password_hash: 'test-only' });
+  const material = await Material.create({ code: `P7H_M_${Date.now()}`, name: 'Quạt mượn HTTP', category_id: (await MaterialCategory.findOne()).id, unit_id: (await UnitOfMeasure.findOne()).id });
+  const source = await MaterialSource.findOne(), warehouse = await Location.findOne({ where: { code: 'LOC_BATTALION_5_WAREHOUSE' } }), store = await Location.findOne({ where: { code: 'LOC_COMPANY_11_STORE' } });
+  await Ledger.create({ material_id: material.id, unit_id: root.id, location_id: warehouse.id, source_id: source.id, condition_id: null, transaction_type: 'NORMAL_RECEIPT', quantity_delta: 10, reference_type: 'PHASE7_HTTP_FIXTURE', reference_id: material.id, occurred_at: new Date(), created_by: admin.id });
+  const server = app.listen(0), base = `http://127.0.0.1:${server.address().port}/api/v1`;
+  const token = u => jwt.sign({ sub: String(u.id), ver: 0 }, jwtConfig().secret, { expiresIn: '5m' });
+  async function call(u, method, path, body) {
+    const r = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token(u)}`, 'Content-Type': 'application/json' }, ...(body && { body: JSON.stringify(body) }) });
+    const json = await r.json(); return { status: r.status, ...json };
+  }
+  try {
+    const code = `P7H_${Date.now()}`;
+    const body = { code, company_unit_id: co.id, due_date: '2025-01-01', items: [{ material_id: material.id, source_id: source.id, quantity: 4, condition_id: null }] };
+    assert.equal((await call(company13, 'POST', '/borrow', body)).status, 403);
+    assert.equal((await call(company, 'GET', '/borrow/borrowed-at?unit_id='+co.id+'&location_id='+store.id)).status, 403);
+    assert.equal((await call(company, 'POST', '/borrow', { ...body, code: 'bad_code' })).status, 400);
+    assert.equal((await call(company, 'POST', '/borrow', { ...body, items: [{ ...body.items[0], quantity: -1 }] })).status, 400);
+    assert.equal((await call(company, 'GET', '/borrow?status=INVALID')).status, 400);
+    assert.equal((await call(admin, 'POST', '/borrow', body)).status, 403);
+    let r = await call(company, 'POST', '/borrow', body); assert.equal(r.status, 201, JSON.stringify(r));
+    const id = r.data.id;
+    assert.equal((await call(company13, 'GET', `/borrow/${id}`)).status, 403);
+    assert.equal((await call(company13, 'GET', `/borrow?company_unit_id=${co.id}`)).status, 403);
+    assert.equal((await call(company, 'POST', `/borrow/${id}/approve`, {})).status, 403);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/submit`, {})).status, 403);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/cancel`, {})).status, 403);
+    assert.equal((await call(company, 'POST', `/borrow/${id}/deliver`, { to_location_id: store.id })).status, 403);
+    assert.equal((await call(company, 'POST', `/borrow/${id}/returns`, { items: [] })).status, 400);
+    assert.equal((await call(company, 'POST', `/borrow/${id}/submit`, {})).status, 200);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/approve`, {})).status, 200);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/deliver`, { to_location_id: store.id })).status, 200);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/deliver`, { to_location_id: store.id })).status, 409);
+    r = await call(admin, 'GET', `/borrow/${id}`); assert.equal(r.status, 200);
+    const line = r.data.items[0].id;
+    const borrowed = await call(admin, 'GET', `/borrow/borrowed-at?unit_id=${co.id}&location_id=${store.id}&material_id=${material.id}`);
+    assert.equal(borrowed.status, 200);
+    assert.equal(borrowed.data.find(x => String(x.borrow_line_id) === String(line)).request_code, code);
+    const returnBody = { items: [{ borrow_line_id: line, from_location_id: store.id, quantity: 2 }] };
+    assert.equal((await call(company13, 'POST', `/borrow/${id}/returns`, returnBody)).status, 403);
+    assert.equal((await call(company, 'POST', `/borrow/${id}/returns`, { ...returnBody, to_location_id: store.id })).status, 400);
+    let requested = await call(company, 'POST', `/borrow/${id}/returns`, returnBody);
+    assert.equal(requested.status, 201, JSON.stringify(requested));
+    assert.equal((await call(company, 'POST', `/borrow/${id}/returns/${requested.data.id}/post`, {})).status, 403);
+    assert.equal((await call(company13, 'PATCH', `/borrow/${id}/returns/${requested.data.id}`, returnBody)).status, 403);
+    assert.equal((await call(company, 'PATCH', `/borrow/${id}/returns/${requested.data.id}`, returnBody)).status, 200);
+    assert.equal((await call(company, 'DELETE', `/borrow/${id}/returns/${requested.data.id}`)).status, 200);
+    const outsider = await call(company13, 'GET', '/borrow?page=1');
+    assert.equal(outsider.status, 200);
+    assert.equal(outsider.data.items.some(x => String(x.id) === String(id)), false);
+    assert.equal((await call(company13, 'GET', `/borrow/${id}`)).status, 403);
+    assert.equal((await call(company13, 'DELETE', `/borrow/${id}/returns/${requested.data.id}`)).status, 403);
+    assert.equal((await call(company, 'GET', '/borrow?page=1')).status, 200);
+    assert.equal((await call(admin, 'GET', '/borrow?page=1')).status, 200);
+    let ret = await call(admin, 'POST', `/borrow/${id}/returns`, returnBody); assert.equal(ret.status, 201, JSON.stringify(ret));
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/returns/${ret.data.id}/post`, {})).status, 200);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/returns/${ret.data.id}/post`, {})).status, 409);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/returns`, { items: [{ ...returnBody.items[0], quantity: 3 }] })).status, 409);
+    assert.equal((await call(admin, 'POST', `/borrow/${id}/returns`, { items: [{ ...returnBody.items[0], from_location_id: 'invalid' }] })).status, 400);
+    assert.equal((await call(company13, 'GET', '/borrow?overdue=true')).data.items.some(x => String(x.id) === String(id)), false);
+    assert.equal((await call(company, 'GET', '/borrow?overdue=true')).data.items.some(x => String(x.id) === String(id)), true);
+    console.log('Phase 7 HTTP RBAC/overdue/validation/double-submit PASS');
+  } finally { server.close(); }
+}
+main().catch(e => { console.error(e); process.exitCode=1 }).finally(() => sequelize.close());

@@ -21,6 +21,7 @@ module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit
     reference_type: { type: D.STRING(64), allowNull: false }, reference_id: { type: D.BIGINT.UNSIGNED, allowNull: false },
     receipt_item_id: { type: D.BIGINT.UNSIGNED, unique: true },
     transfer_item_id: D.BIGINT.UNSIGNED, transfer_side: D.STRING(8),
+    borrow_line_id: D.BIGINT.UNSIGNED, borrow_delivery_id: D.BIGINT.UNSIGNED, borrow_return_line_id: D.BIGINT.UNSIGNED,
     occurred_at: { type: D.DATE, allowNull: false }, created_by: { type: D.BIGINT.UNSIGNED, allowNull: false },
   }, { tableName: 'stock_ledger_entries' });
   const restrict = { onDelete: 'RESTRICT' };
