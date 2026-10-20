@@ -10,7 +10,7 @@ module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit
   const StockTransferItem = sequelize.define('StockTransferItem', {
     id: { type: D.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true }, transfer_id: { type: D.BIGINT.UNSIGNED, allowNull: false },
     material_id: { type: D.BIGINT.UNSIGNED, allowNull: false }, source_id: { type: D.BIGINT.UNSIGNED, allowNull: false },
-    condition_id: D.BIGINT.UNSIGNED, quantity: { type: D.BIGINT.UNSIGNED, allowNull: false }, note: D.TEXT,
+    condition_id: D.BIGINT.UNSIGNED, quantity: { type: D.BIGINT.UNSIGNED, allowNull: false }, note: D.TEXT, borrow_line_id: D.BIGINT.UNSIGNED,
   }, { tableName: 'stock_transfer_items' });
   const restrict = { onDelete: 'RESTRICT' };
   StockTransfer.hasMany(StockTransferItem, { foreignKey: 'transfer_id', as: 'items', ...restrict });

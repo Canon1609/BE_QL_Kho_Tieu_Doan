@@ -1,0 +1,113 @@
+// B12/B13: isolated, append-only fixtures. Never run against development DB.
+const assert = require('node:assert/strict');
+const jwt = require('jsonwebtoken');
+const app = require('../src/app');
+const { jwtConfig } = require('../src/services/auth.service');
+const { sequelize, Unit, User, Role, Material, MaterialCategory, UnitOfMeasure, MaterialSource, ConditionLevel, Location, StockLedgerEntry: Ledger, BorrowRequest, BorrowReturn } = require('../src/models');
+const borrow = require('../src/services/borrow.service');
+const transfer = require('../src/services/transfer.service');
+const location = require('../src/services/location-management.service');
+const prefix = `P7MX_${Date.now()}_`;
+async function main() {
+  assert.equal(process.env.DB_NAME, 'ql_kho_tieu_doan_5_phase7_verify', 'Refusing non-Phase-7 DB');
+  const root = await Unit.findOne({ where: { code: 'BATTALION_5' } });
+  const companies = await Promise.all([11,12,13].map(n => Unit.findOne({ where: { code: `COMPANY_${n}` } })));
+  assert(companies.every(Boolean));
+  const baseUser = await User.findOne({ where: { unit_id: root.id } });
+  const admin = { ...baseUser.get({ plain: true }), unit: root, role: { code: 'BATTALION_ADMIN' } };
+  const users = companies.map(u => ({ ...admin, unit_id: u.id, unit: u, role: { code: 'COMPANY_ADMIN' } }));
+  const role = await Role.findOne({ where: { code: 'COMPANY_ADMIN' } });
+  const authUsers = await Promise.all(companies.map((u,n) => User.create({ username: prefix+`C${n}`, full_name: 'Phase 7 matrix', password_hash: 'test-only', unit_id: u.id, role_id: role.id })));
+  const wh = await Location.findOne({ where: { code: 'LOC_BATTALION_5_WAREHOUSE' } });
+  const store = await Location.findOne({ where: { code: 'LOC_COMPANY_11_STORE' } });
+  const rootLocation = await Location.findOne({ where: { code: 'LOC_BATTALION_5_ROOT' } });
+  const room = await Location.create({ code: prefix+'R101', name: 'Phòng 101', type: 'ROOM', parent_location_id: rootLocation.id, is_active: true, is_stock_holding: true });
+  const room2 = await Location.create({ code: prefix+'R102', name: 'Phòng 102 ma trận Phase 7', type: 'ROOM', parent_location_id: rootLocation.id, is_active: true, is_stock_holding: true });
+  const mat = await Material.create({ code: prefix+'M', name: 'Vật chất nhiều nguồn/tình trạng P7', category_id: (await MaterialCategory.findOne()).id, unit_id: (await UnitOfMeasure.findOne()).id });
+  const sources = await MaterialSource.findAll({ where: { is_active: true }, limit: 2 });
+  const conditions = await ConditionLevel.findAll({ where: { is_active: true }, limit: 2 });
+  assert.equal(sources.length, 2, 'Need two active sources'); assert.equal(conditions.length, 2, 'Need two active conditions');
+  const dims = [{ source_id: sources[0].id, condition_id: conditions[0].id }, { source_id: sources[1].id, condition_id: conditions[1].id }];
+  const sum = async (unit, place, dim, tag = null) => (await Ledger.findAll({ where: { material_id: mat.id, unit_id: unit.id, location_id: place.id, ...dim, borrow_line_id: tag }, attributes: ['quantity_delta'] })).reduce((n,r) => n + Number(r.quantity_delta), 0);
+  const entries = async () => Ledger.findAll({ where: { material_id: mat.id }, raw: true });
+  for (const d of dims) await Ledger.create({ material_id: mat.id, ...d, unit_id: root.id, location_id: wh.id, quantity_delta: 30, transaction_type: 'NORMAL_RECEIPT', reference_type: 'PHASE7_MATRIX', reference_id: mat.id, occurred_at: new Date(), created_by: admin.id });
+  const draft = (suffix, type, company, from, to, d, quantity, tag) => ({ code: prefix+suffix, transfer_type: type, transfer_date: '2026-10-15', company_unit_id: company.id, from_location_id: from?.id, to_location_id: to?.id, items: [{ material_id: mat.id, ...d, quantity, ...(tag ? { borrow_line_id: tag } : {}) }] });
+  const post = async data => transfer.post((await transfer.save(null, data, admin)).id, admin);
+  const approved = async (suffix, company, user, d, qty) => { const r = await borrow.save(null, { code: prefix+suffix, company_unit_id: company.id, due_date: '2026-12-31', items: [{ material_id: mat.id, ...d, quantity: qty }] }, user); await borrow.transition(r.id, 'SUBMITTED', user); await borrow.transition(r.id, 'APPROVED', admin); return r.id; };
+  for (let n = 0; n < 3; n++) await post(draft(`ISS${n}`, 'ISSUE', companies[n], null, room, dims[0], 2));
+  assert.equal(await sum(root, wh, dims[0]), 24);
+  const id = await approved('MAIN', companies[0], users[0], dims[0], 6);
+  const delivered = await borrow.delivery(id, { to_location_id: room.id }, admin), tag = delivered.items[0].id;
+  assert.equal(await sum(root, wh, dims[0]), 18); assert.equal(await sum(companies[0], room, dims[0]), 2); assert.equal(await sum(companies[0], room, dims[0], tag), 6);
+  assert.equal(await sum(companies[1], room, dims[0]), 2); assert.equal(await sum(companies[2], room, dims[0]), 2);
+  await post(draft('ISS_ALT', 'ISSUE', companies[0], null, room, dims[1], 3));
+  assert.equal(await sum(root, wh, dims[1]), 27); assert.equal(await sum(companies[0], room, dims[1]), 3);
+  const other = await approved('ALT', companies[0], users[0], dims[1], 3);
+  const alt = await borrow.delivery(other, { to_location_id: room.id }, admin);
+  assert.equal(await sum(root, wh, dims[1]), 24); assert.equal(await sum(companies[0], room, dims[1], alt.items[0].id), 3);
+  const stolen = await transfer.save(null, draft('NO_TAG', 'INTERNAL_TRANSFER', companies[0], room, room2, dims[0], 3), admin);
+  await assert.rejects(() => transfer.post(stolen.id, admin), e => e.statusCode === 409);
+  const recalled = await transfer.save(null, draft('RECALL3', 'RECALL', companies[0], room, wh, dims[0], 3), admin);
+  await assert.rejects(() => transfer.post(recalled.id, admin), e => e.statusCode === 409);
+  await post(draft('MOVE_ISSUED', 'INTERNAL_TRANSFER', companies[0], room, store, dims[0], 2));
+  await post(draft('RECALL2', 'RECALL', companies[0], store, wh, dims[0], 2));
+  assert.equal(await sum(companies[0], room, dims[0]), 0); assert.equal(await sum(companies[0], room, dims[0], tag), 6);
+  await post(draft('MOVE', 'INTERNAL_TRANSFER', companies[0], room, room2, dims[0], 2, tag));
+  assert.equal(await sum(companies[0], room2, dims[0], tag), 2); assert.equal(await sum(companies[0], room, dims[0], tag), 4);
+  await assert.rejects(() => transfer.save(null, draft('SPOOF', 'INTERNAL_TRANSFER', companies[1], room, room2, dims[0], 1, tag), admin), e => e.statusCode === 400);
+  const ret = await borrow.returnSave(id, null, { items: [{ borrow_line_id: tag, from_location_id: room2.id, quantity: 2 }] }, admin);
+  await borrow.returnPost(id, ret.id, admin);
+  assert.equal((await BorrowRequest.findByPk(id)).status, 'PARTIAL'); assert.equal(await sum(companies[0], room2, dims[0], tag), 0);
+  await assert.rejects(() => borrow.returnSave(id, null, { items: [{ borrow_line_id: tag, from_location_id: room.id, quantity: 5 }] }, admin), e => e.statusCode === 409);
+  const snapshot = await entries(); assert(snapshot.every(x => x.source_id == dims[0].source_id && x.condition_id == dims[0].condition_id || x.source_id == dims[1].source_id && x.condition_id == dims[1].condition_id));
+  assert.equal(snapshot.reduce((n,r) => n + Number(r.quantity_delta), 0), 60);
+  const visible = await location.balances(users[0], { location_id: String(room.id) });
+  assert(visible.every(x => String(x.unit_id) === String(companies[0].id)));
+  for (let n = 1; n < 3; n++) assert((await location.balances(users[n], { location_id: String(room.id) })).every(x => String(x.unit_id) === String(companies[n].id)));
+  const server = app.listen(0), base = `http://127.0.0.1:${server.address().port}/api/v1`;
+  const token = u => jwt.sign({ sub: String(u.id), ver: 0 }, jwtConfig().secret, { expiresIn: '10m' });
+  const call = async (u, method, path, body) => { const res = await fetch(base+path, { method, headers: { Authorization: `Bearer ${token(u)}`, 'Content-Type': 'application/json' }, ...(body && { body: JSON.stringify(body) }) }); return { status: res.status, data: await res.json() }; };
+  const race = async (a,b,expected, label) => { const result = await Promise.all([a(),b()]); assert.deepEqual(result.map(x => x.status).sort((x,y) => x-y), expected, `${label}: ${JSON.stringify(result)}`); console.log(label, result.map(x => x.status).join('/')); };
+  try {
+    const rootAuth = baseUser;
+    const foreign = await approved('FOREIGN', companies[1], users[1], dims[0], 1);
+    for (let n = 0; n < 3; n++) {
+      const forbidden = await call(authUsers[n], 'GET', `/borrow/${n === 0 ? foreign : id}`);
+      assert.equal(forbidden.status, 403);
+      assert.equal((await call(authUsers[n], 'GET', `/transfers/company-assets/${companies[(n+1)%3].id}`)).status, 403);
+    }
+    const raceIds = await Promise.all(['GA','GB'].map(s => approved(s, companies[0], users[0], dims[1], 15)));
+    await race(() => call(rootAuth,'POST',`/borrow/${raceIds[0]}/deliver`,{to_location_id: room.id}), () => call(rootAuth,'POST',`/borrow/${raceIds[1]}/deliver`,{to_location_id: room.id}), [200,409], 'giao-giao');
+    const winner = (await BorrowRequest.findByPk(raceIds[0])).status === 'DELIVERED' ? raceIds[0] : raceIds[1];
+    assert.equal(await sum(root, wh, dims[1]), 9);
+    const win = await borrow.request(winner, admin), winTag = win.items[0].id;
+    const a = await borrow.returnSave(winner, null, { items: [{ borrow_line_id: winTag, from_location_id: room.id, quantity: 15 }] }, admin);
+    const b = await borrow.returnSave(winner, null, { items: [{ borrow_line_id: winTag, from_location_id: room.id, quantity: 15 }] }, admin);
+    await race(() => call(rootAuth,'POST',`/borrow/${winner}/returns/${a.id}/post`,{}), () => call(rootAuth,'POST',`/borrow/${winner}/returns/${b.id}/post`,{}), [200,409], 'tra-tra');
+    assert.equal(await sum(companies[0], room, dims[1], winTag), 0);
+    const posted = (await BorrowReturn.findByPk(a.id)).status === 'POSTED' ? a.id : b.id;
+    assert.equal((await call(rootAuth,'POST',`/borrow/${winner}/returns/${posted}/post`,{})).status, 409);
+    assert.equal(await Ledger.count({ where: { borrow_return_line_id: (await require('../src/models').BorrowReturnLine.findOne({ where: { return_id: posted } })).id } }), 2);
+    const same = await approved('SAME', companies[0], users[0], dims[0], 1);
+    await race(() => call(rootAuth,'POST',`/borrow/${same}/deliver`,{to_location_id: store.id}), () => call(rootAuth,'POST',`/borrow/${same}/deliver`,{to_location_id: store.id}), [200,409], 'giao-cung-phieu');
+    const sameRow = await borrow.request(same, admin); assert.equal((await Ledger.count({ where: { borrow_delivery_id: sameRow.delivery.id } })), 2);
+    // Concurrent delivery and a transfer posting contend for the SAME root material row/dimension.
+    const compete = await approved('COMPETE', companies[0], users[0], dims[1], 13);
+    const issue = await transfer.save(null, draft('COMPETE_ISS', 'ISSUE', companies[1], null, room, dims[1], 13), admin);
+    await race(() => call(rootAuth,'POST',`/borrow/${compete}/deliver`,{to_location_id: room.id}), () => call(rootAuth,'POST',`/transfers/${issue.id}/post`,{}), [200,409], 'giao-dieu-chuyen-cung-ton-root');
+    assert.equal(await sum(root, wh, dims[1]), 11);
+    // Return and transfer contend for the same tagged company balance at the same location.
+    const outstanding = await borrow.returnSave(id, null, { items: [{ borrow_line_id: tag, from_location_id: room.id, quantity: 4 }] }, admin);
+    const move = await transfer.save(null, draft('COMPETE_MOVE', 'INTERNAL_TRANSFER', companies[0], room, room2, dims[0], 4, tag), admin);
+    await race(() => call(rootAuth,'POST',`/borrow/${id}/returns/${outstanding.id}/post`,{}), () => call(rootAuth,'POST',`/transfers/${move.id}/post`,{}), [200,409], 'tra-dieu-chuyen-cung-tag');
+    assert.equal(await sum(companies[0], room, dims[0], tag), 0);
+    const returned = (await BorrowReturn.findByPk(outstanding.id)).status === 'POSTED';
+    assert.equal(await sum(companies[0], room2, dims[0], tag), returned ? 0 : 4);
+    assert.equal(await sum(root, wh, dims[0]), returned ? 25 : 21);
+    const final = await entries(); assert.equal(final.reduce((n,r) => n+Number(r.quantity_delta),0),60);
+    const byDimension = new Map(); for (const r of final) { const key = [r.unit_id,r.location_id,r.source_id,r.condition_id,r.borrow_line_id].join(':'); byDimension.set(key, (byDimension.get(key)||0)+Number(r.quantity_delta)); }
+    assert([...byDimension.values()].every(n => n >= 0), 'negative dimension');
+    console.log('B12/B13 matrix PASS');
+  } finally { server.close(); }
+}
+main().catch(e => { console.error(e); process.exitCode = 1 }).finally(() => sequelize.close());

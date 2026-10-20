@@ -12,8 +12,8 @@ function validate(body) {
     (body.transfer_type === 'RECALL' && ('from_location_id' in body || 'to_location_id' in body)) ||
     (body.transfer_type === 'ISSUE' && ('from_location_id' in body || 'to_location_id' in body && !id(String(body.to_location_id)))) ||
     (body.transfer_type === 'INTERNAL_TRANSFER' && (!id(String(body.from_location_id)) || !id(String(body.to_location_id)))) || !text(body.document_no, 120) || !text(body.note, 5000) || !Array.isArray(body.items) || !body.items.length || body.items.length > 100) bad();
-  for (const item of body.items) if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(k => !['material_id', 'source_id', 'condition_id', 'quantity', 'note'].includes(k)) ||
-    !id(String(item.material_id)) || !id(String(item.source_id)) || item.condition_id != null && !id(String(item.condition_id)) ||
+  for (const item of body.items) if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(k => !['material_id', 'source_id', 'condition_id', 'quantity', 'note', 'borrow_line_id'].includes(k)) ||
+    !id(String(item.material_id)) || !id(String(item.source_id)) || item.condition_id != null && !id(String(item.condition_id)) || item.borrow_line_id != null && (body.transfer_type !== 'INTERNAL_TRANSFER' || !id(String(item.borrow_line_id))) ||
     typeof item.quantity !== 'number' || !Number.isSafeInteger(item.quantity) || item.quantity <= 0 || !text(item.note, 5000)) bad();
   return body;
 }
