@@ -12,7 +12,7 @@ async function check(data, self, transaction) {
   if (!types.includes(data.type) || groups.includes(data.type) === Boolean(data.is_stock_holding)) invalid({ type: 'Loại địa điểm và chức năng lưu giữ không phù hợp.' });
   if (data.owner_unit_id) {
     const unit = await Unit.findByPk(data.owner_unit_id, { transaction });
-    if (!unit?.is_active || !['BATTALION', 'COMPANY'].includes(unit.type)) invalid({ owner_unit_id: 'Đơn vị quản trị không hợp lệ.' });
+    if (!unit?.is_active || !['BATTALION', 'COMPANY', 'BATTALION_HQ', 'KITCHEN'].includes(unit.type)) invalid({ owner_unit_id: 'Đơn vị quản trị không hợp lệ.' });
   }
   if (data.parent_location_id) {
     const parent = await Location.findByPk(data.parent_location_id, { transaction });
@@ -88,7 +88,7 @@ async function balances(user, q) {
   if (q.location_id) { await detail(q.location_id, user); ids = q.descendants === 'true' ? await descendantIds(q.location_id) : [String(q.location_id)]; }
   if (q.unit_id && user.role.code === 'BATTALION_ADMIN') {
     const unit = await Unit.findByPk(q.unit_id);
-    if (!unit?.is_active || !['BATTALION', 'COMPANY'].includes(unit.type) || unit.type === 'COMPANY' && String(unit.parent_id) !== String(user.unit_id)) fail(400, 'Đơn vị không hợp lệ');
+    if (!unit?.is_active || !['BATTALION', 'COMPANY', 'BATTALION_HQ', 'KITCHEN'].includes(unit.type) || unit.type !== 'BATTALION' && String(unit.parent_id) !== String(user.unit_id)) fail(400, 'Đơn vị không hợp lệ');
   }
   const where = { ...(user.role.code === 'COMPANY_ADMIN' ? { unit_id: user.unit_id } : q.unit_id ? { unit_id: q.unit_id } : {}),
     ...(ids ? { location_id: { [Op.in]: ids } } : {}), ...(q.material_id ? { material_id: q.material_id } : {}) };
@@ -105,4 +105,10 @@ async function balances(user, q) {
   const name = (rows, id) => rows.find(r => String(r.id) === String(id));
   return positive.map(e => ({ ...e, quantity: String(e.quantity), location: name(locations, e.location_id), unit: name(units, e.unit_id), material: name(materials, e.material_id), source: name(sources, e.source_id), condition: name(conditions, e.condition_id) || null }));
 }
-module.exports = { list, detail, save, remove, balances };
+async function managedUnits(user) {
+  admin(user);
+  const rootUnit = user.unit;
+  const rows = await Unit.findAll({ where: { parent_id: rootUnit.id, type: ['COMPANY', 'BATTALION_HQ', 'KITCHEN'], is_active: true }, attributes: ['id', 'code', 'name', 'type'], order: [['name', 'ASC']] });
+  return rows.map(plain);
+}
+module.exports = { list, detail, save, remove, balances, managedUnits };

@@ -3,6 +3,7 @@ const { sequelize, StockTransfer: Transfer, StockTransferItem: Item, StockLedger
 const { canAccessUnit } = require('./unitScope.service');
 const ApiError = require('../utils/ApiError');
 const { legacyLocation, holdingWhere } = require('./location.service');
+const recipientTypes = ['COMPANY', 'BATTALION_HQ', 'KITCHEN'];
 const { requireBalance } = require('./borrow-balance.service');
 const fail = (status, message) => { throw new ApiError(status, message); };
 const ref = (model, as) => ({ model, as, attributes: ['id', 'code', 'name'] });
@@ -19,7 +20,7 @@ const safe = async fn => {
 async function company(unitId, user, transaction) {
   if (!await canAccessUnit(user, unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId, { transaction });
-  if (!unit?.is_active || unit.type !== 'COMPANY' || String(unit.parent_id) !== String(user.unit_id)) fail(400, 'Đại đội không hợp lệ');
+  if (!unit?.is_active || !recipientTypes.includes(unit.type) || String(unit.parent_id) !== String(user.unit_id)) fail(400, 'Đơn vị nhận không hợp lệ');
   return unit;
 }
 async function root(user, transaction) {
@@ -70,6 +71,7 @@ async function save(id, data, user) {
         if (!await canAccessUnit(user, data.company_unit_id)) fail(403, 'Forbidden');
         const unit = await Unit.findByPk(data.company_unit_id, { transaction });
         if (!unit?.is_active || !['COMPANY', 'BATTALION'].includes(unit.type)) fail(400, 'Đơn vị không hợp lệ');
+        if (unit.type !== 'COMPANY') fail(409, 'Điều chuyển nội bộ hiện chỉ hỗ trợ Đại đội; đơn vị này chưa được mở luồng điều chuyển');
         await holding(data.from_location_id, transaction);
         await holding(data.to_location_id, transaction);
         if (String(data.from_location_id) === String(data.to_location_id)) fail(400, 'Nơi chuyển và nơi nhận phải khác nhau');
@@ -129,7 +131,7 @@ async function post(id, user) {
       if (internal) {
         if (String(row.from_unit_id) !== String(row.to_unit_id) || !await canAccessUnit(user, row.from_unit_id)) fail(403, 'Forbidden');
         const unit = await Unit.findByPk(row.from_unit_id, { transaction });
-        if (!unit?.is_active) fail(409, 'Đơn vị đã ngừng hoạt động');
+        if (!unit?.is_active || unit.type !== 'COMPANY') fail(409, 'Điều chuyển nội bộ hiện chỉ hỗ trợ Đại đội');
       } else {
         if (!['ISSUE', 'RECALL'].includes(row.transfer_type) || String(row.transfer_type === 'ISSUE' ? row.from_unit_id : row.to_unit_id) !== String(warehouse.id)) fail(400, 'Vị trí phiếu không hợp lệ');
         await company(companyId, user, transaction);
@@ -193,7 +195,7 @@ async function units(user) {
 async function assets(unitId, user, q) {
   if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId);
-  if (!unit || unit.type !== 'COMPANY' || !unit.is_active) fail(403, 'Forbidden');
+  if (!unit || !recipientTypes.includes(unit.type) || !unit.is_active) fail(403, 'Forbidden');
   const rows = await Ledger.findAll({ where: { unit_id: unitId, ...(q.material_id ? { material_id: q.material_id } : {}) },
     attributes: ['material_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']],
     group: ['material_id', 'source_id', 'condition_id'], raw: true });
@@ -216,7 +218,7 @@ async function assets(unitId, user, q) {
 async function history(unitId, user, q) {
   if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId);
-  if (!unit || unit.type !== 'COMPANY' || !unit.is_active) fail(403, 'Forbidden');
+  if (!unit || !recipientTypes.includes(unit.type) || !unit.is_active) fail(403, 'Forbidden');
   const where = { unit_id: unitId, reference_type: { [Op.in]: ['STOCK_TRANSFER', 'BORROW_DELIVERY', 'BORROW_RETURN'] } };
   if (q.material_id) where.material_id = q.material_id;
   const page = Number(q.page || 1), limit = 20;

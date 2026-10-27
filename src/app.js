@@ -8,6 +8,7 @@ const stockRoutes = require('./routes/stock.routes');
 const transferRoutes = require('./routes/transfer.routes');
 const locationRoutes = require('./routes/location.routes');
 const borrowRoutes = require('./routes/borrow.routes');
+const searchRoutes = require('./routes/search.routes');
 const { notFound, errorHandler } = require("./middlewares/error.middleware");
 
 const app = express();
@@ -22,6 +23,7 @@ app.use('/api/v1/stock', stockRoutes);
 app.use('/api/v1/transfers', transferRoutes);
 app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/borrow', borrowRoutes);
+app.use('/api/v1/search/materials', searchRoutes);
 app.use(notFound);
 app.use(errorHandler);
 

@@ -72,6 +72,7 @@ async function main() {
         failNextList = false;
         const body = JSON.stringify({ success: false, message: 'Dịch vụ tạm thời không khả dụng.' });
         inspect(url.pathname + url.search, 503, body);
+        console.log('CLOSEOUT 503 injected: GET', url.pathname, 'search present:', url.searchParams.has('search'));
         return route.fulfill({ status: 503, contentType: 'application/json', body });
       }
       const response = await route.fetch({ url: `http://127.0.0.1:${port}${url.pathname}${url.search}` });
@@ -134,7 +135,7 @@ async function main() {
       failNextList = true;
       await page.getByRole('button', { name: 'Tải lại' }).count();
       await page.getByLabel('Tìm mã / chứng từ').fill(`TRIGGER_503_${code}`);
-      await page.getByRole('alert').getByText('Dịch vụ tạm thời không khả dụng.').waitFor();
+      await page.getByRole('alert').getByText('Không tải được danh sách phiếu: Máy chủ đang gặp sự cố. Vui lòng thử lại sau.').waitFor();
       assert.equal(await page.getByLabel('Mã phiếu').inputValue(), `${code}_${type}_UI`);
       await page.getByRole('button', { name: 'Tải lại' }).click();
       await page.getByText('Không có phiếu phù hợp.').waitFor();
