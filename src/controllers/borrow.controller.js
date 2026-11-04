@@ -24,6 +24,11 @@ const send = (res, data, status = 200) => res.status(status).json({ success: tru
 const check = req => { if (!id(req.params.id) || req.params.returnId && !id(req.params.returnId)) bad(); };
 module.exports = {
   list: handle(async (req, res) => send(res, await service.list(query(req.query), req.user))),
+  dashboardDebts: handle(async (req, res) => {
+    const q = req.query;
+    if (!keys(q, ['kind', 'unit_id', 'page']) || !['outstanding', 'overdue'].includes(q.kind) || q.unit_id != null && !id(q.unit_id) || q.page != null && !/^[1-9]\d{0,5}$/.test(q.page)) bad();
+    send(res, await service.dashboardDebts({ ...q, overdue: q.kind === 'overdue' }, req.user));
+  }),
   references: handle(async (req, res) => send(res, await service.references(req.user))),
   borrowedAt: handle(async (req, res) => { if (!keys(req.query, ['unit_id', 'location_id', 'material_id']) || !id(req.query.unit_id) || !id(req.query.location_id) || req.query.material_id != null && !id(req.query.material_id)) bad(); send(res, await service.borrowedAt(req.user, req.query)); }),
   detail: handle(async (req, res) => { check(req); send(res, await service.request(req.params.id, req.user)); }),
