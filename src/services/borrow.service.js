@@ -1,5 +1,5 @@
 const { Op, UniqueConstraintError, literal } = require('sequelize');
-const { sequelize, BorrowRequest: Request, BorrowLine: Line, BorrowDelivery: Delivery, BorrowReturn: Return, BorrowReturnLine: ReturnLine, StockLedgerEntry: Ledger, Material, MaterialSource: Source, ConditionLevel: Condition, Unit, Location } = require('../models');
+const { sequelize, BorrowRequest: Request, BorrowLine: Line, BorrowDelivery: Delivery, BorrowReturn: Return, BorrowReturnLine: ReturnLine, StockLedgerEntry: Ledger, Material, MaterialSource: Source, ConditionLevel: Condition, Unit, UnitOfMeasure, Location } = require('../models');
 const ApiError = require('../utils/ApiError');
 const { canAccessUnit } = require('./unitScope.service');
 const { legacyLocation } = require('./location.service');
@@ -9,7 +9,7 @@ const fail = (status, message) => { throw new ApiError(status, message); };
 const plain = row => row && JSON.parse(JSON.stringify(row));
 // Only posted returns reduce debt; pending returns do not. Keep this predicate in SQL before pagination.
 const hasDebt = `EXISTS (SELECT 1 FROM borrow_lines bl WHERE bl.request_id = BorrowRequest.id AND bl.quantity > COALESCE((SELECT SUM(brl.quantity) FROM borrow_return_lines brl JOIN borrow_returns br ON br.id = brl.return_id WHERE br.request_id = BorrowRequest.id AND br.status = 'POSTED' AND brl.borrow_line_id = bl.id), 0))`;
-const include = [{ model: Line, as: 'items', include: [{ model: Material, as: 'material', attributes: ['id', 'code', 'name'] }, { model: Source, as: 'source', attributes: ['id', 'code', 'name'] }, { model: Condition, as: 'condition', attributes: ['id', 'code', 'name'] }] }, { model: Delivery, as: 'delivery' }, { model: Return, as: 'returns', include: [{ model: ReturnLine, as: 'items' }] }, { model: Unit, as: 'company', attributes: ['id', 'code', 'name'] }];
+const include = [{ model: Line, as: 'items', include: [{ model: Material, as: 'material', attributes: ['id', 'code', 'name'], include: [{ model: UnitOfMeasure, as: 'unit', attributes: ['name'] }] }, { model: Source, as: 'source', attributes: ['id', 'code', 'name'] }, { model: Condition, as: 'condition', attributes: ['id', 'code', 'name'] }] }, { model: Delivery, as: 'delivery' }, { model: Return, as: 'returns', include: [{ model: ReturnLine, as: 'items' }] }, { model: Unit, as: 'company', attributes: ['id', 'code', 'name'] }];
 async function scope(user, unitId, transaction) {
   if (user.role.code === 'COMPANY_ADMIN' && String(unitId) !== String(user.unit_id) || !await canAccessUnit(user, unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId, { transaction });
@@ -47,6 +47,61 @@ async function list(q, user) {
   const debt = new Map();
   for (const line of lines) debt.set(String(line.request_id), (debt.get(String(line.request_id)) || 0n) + BigInt(line.quantity) - (returned.get(String(line.id)) || 0n));
   return { items: rows.map(r => ({ ...plain(r), outstanding_quantity: ['DELIVERED', 'PARTIAL'].includes(r.status) ? String(debt.get(String(r.id)) || 0n) : '0' })), total: count, page, limit };
+}
+async function dashboardDebts(q, user) {
+  if (user.role.code === 'BATTALION_ADMIN') admin(user);
+  else if (user.role.code === 'COMPANY_ADMIN') await scope(user, user.unit_id);
+  else fail(403, 'Forbidden');
+  let selectedUnit = null;
+  if (q.unit_id) {
+    if (!await canAccessUnit(user, q.unit_id)) fail(403, 'Forbidden');
+    selectedUnit = await Unit.findByPk(q.unit_id);
+    if (!selectedUnit || selectedUnit.type === 'BATTALION' && user.role.code !== 'BATTALION_ADMIN') fail(403, 'Forbidden');
+  }
+  let visibleCompanies;
+  if (user.role.code === 'COMPANY_ADMIN') visibleCompanies = [String(user.unit_id)];
+  else if (selectedUnit?.type === 'COMPANY') visibleCompanies = [String(selectedUnit.id)];
+  else {
+    const all = await Unit.findAll({ attributes: ['id', 'parent_id', 'type', 'is_active'], raw: true });
+    const descendants = new Set([String(selectedUnit?.id || user.unit_id)]);
+    let changed = true;
+    while (changed) { changed = false; for (const row of all) if (row.is_active && descendants.has(String(row.parent_id)) && !descendants.has(String(row.id))) { descendants.add(String(row.id)); changed = true; } }
+    visibleCompanies = all.filter(row => row.is_active && row.type === 'COMPANY' && descendants.has(String(row.id))).map(row => String(row.id));
+  }
+  const where = {
+    status: { [Op.in]: ['DELIVERED', 'PARTIAL'] },
+    company_unit_id: q.unit_id ? String(q.unit_id) : { [Op.in]: visibleCompanies },
+    [Op.and]: [literal(`EXISTS (SELECT 1 FROM borrow_deliveries bd WHERE bd.request_id = BorrowRequest.id AND ${hasDebt})`)],
+  };
+  if (q.overdue) {
+    where.due_date = { [Op.lt]: vietnamToday() };
+    where[Op.and] = [literal(`EXISTS (SELECT 1 FROM borrow_deliveries bd WHERE bd.request_id = BorrowRequest.id AND ${hasDebt})`)];
+  }
+  const page = Number(q.page || 1), limit = 20;
+  const { rows, count } = await Request.findAndCountAll({ where, limit, offset: (page - 1) * limit, order: [['due_date', 'ASC'], ['id', 'DESC']], distinct: true, include: [
+    { model: Unit, as: 'company', attributes: ['id', 'code', 'name'] },
+    { model: Delivery, as: 'delivery', attributes: ['confirmed_at', 'from_location_id', 'to_location_id'] },
+    { model: Line, as: 'items', required: true, include: [
+      { model: Material, as: 'material', attributes: ['id', 'code', 'name'], include: [{ model: UnitOfMeasure, as: 'unit', attributes: ['name'] }] },
+      { model: Source, as: 'source', attributes: ['id', 'code', 'name'] },
+      { model: Condition, as: 'condition', attributes: ['id', 'code', 'name'] },
+    ] },
+    { model: Return, as: 'returns', where: { status: 'POSTED' }, required: false, include: [{ model: ReturnLine, as: 'items', attributes: ['borrow_line_id', 'quantity'] }] },
+  ] });
+  const items = [];
+  for (const row of rows) {
+    const returned = new Map();
+    for (const ret of row.returns || []) for (const line of ret.items || []) returned.set(String(line.borrow_line_id), (returned.get(String(line.borrow_line_id)) || 0n) + BigInt(line.quantity));
+    for (const line of row.items || []) {
+      const remaining = BigInt(line.quantity) - (returned.get(String(line.id)) || 0n);
+      if (remaining <= 0n) continue;
+      items.push({ requestId: String(row.id), requestCode: row.code, status: row.status, companyUnitId: String(row.company_unit_id), companyUnitName: row.company.name,
+        dueDate: row.due_date, deliveredAt: row.delivery.confirmed_at, materialId: String(line.material_id), materialCode: line.material.code, materialName: line.material.name,
+        measure: line.material.unit?.name || null, quantityDelivered: String(line.quantity), quantityReturned: String(returned.get(String(line.id)) || 0n), quantityOutstanding: String(remaining),
+        overdueDays: q.overdue ? Math.max(0, Math.floor((Date.parse(`${vietnamToday()}T00:00:00Z`) - Date.parse(`${row.due_date}T00:00:00Z`)) / 86400000)) : 0 });
+    }
+  }
+  return { items, totalRequests: count, page, limit };
 }
 async function validateLines(items, transaction) {
   const seen = new Set();
@@ -239,4 +294,4 @@ async function returnPost(requestId, returnId, user) {
   });
   return request(requestId, user);
 }
-module.exports = { request, list, save, transition, delivery, returnSave, returnRemove, returnPost, borrowedAt, references };
+module.exports = { request, list, dashboardDebts, save, transition, delivery, returnSave, returnRemove, returnPost, borrowedAt, references };

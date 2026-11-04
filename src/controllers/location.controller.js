@@ -10,6 +10,7 @@ function query(q) {
 const send = (res, data, status = 200) => res.status(status).json({ success: true, data });
 module.exports = {
   list: handle(async (req, res) => { if (Object.keys(req.query).length) bad(); send(res, await service.list(req.user)); }),
+  units: handle(async (req, res) => { if (Object.keys(req.query).length) bad(); send(res, await service.managedUnits(req.user)); }),
   detail: handle(async (req, res) => { if (!id(req.params.id)) bad(); send(res, await service.detail(req.params.id, req.user)); }),
   balance: handle(async (req, res) => send(res, await service.balances(req.user, query(req.query)))),
   create: handle(async (req, res) => send(res, await service.save(null, validate(req.body), req.user), 201)),

@@ -4,6 +4,7 @@ const authorizeRoles = require('../middlewares/authorizeRoles');
 const controller = require('../controllers/location.controller');
 router.use(authenticate, authorizeRoles('BATTALION_ADMIN', 'COMPANY_ADMIN'));
 router.get('/', controller.list);
+router.get('/units', controller.units);
 router.get('/balance', controller.balance);
 router.get('/:id', controller.detail);
 router.use(authorizeRoles('BATTALION_ADMIN'));

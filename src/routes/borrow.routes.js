@@ -3,6 +3,7 @@ const authenticate = require('../middlewares/authenticate');
 const authorize = require('../middlewares/authorizeRoles');
 const c = require('../controllers/borrow.controller');
 router.use(authenticate, authorize('BATTALION_ADMIN', 'COMPANY_ADMIN'));
+router.get('/dashboard-debts', c.dashboardDebts);
 router.get('/', c.list);
 router.get('/references', c.references);
 router.get('/borrowed-at', authorize('BATTALION_ADMIN'), c.borrowedAt);

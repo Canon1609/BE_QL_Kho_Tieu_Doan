@@ -1,0 +1,10 @@
+const router = require('express').Router();
+const authenticate = require('../middlewares/authenticate');
+const authorize = require('../middlewares/authorizeRoles');
+const controller = require('../controllers/search.controller');
+router.use(authenticate, authorize('BATTALION_ADMIN', 'COMPANY_ADMIN'));
+router.get('/units', controller.units);
+router.get('/', controller.list);
+router.get('/:id', controller.detail);
+router.get('/:id/history', controller.history);
+module.exports = router;
