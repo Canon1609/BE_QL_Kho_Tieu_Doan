@@ -10,6 +10,9 @@ const master = require('./material-master.model')(sequelize, DataTypes);
 const stock = require('./stock.model')(sequelize, DataTypes, { ...master, Unit, User, Location });
 const transfers = require('./transfer.model')(sequelize, DataTypes, { ...master, ...stock, Unit, User });
 const borrow = require('./borrow.model')(sequelize, DataTypes, { ...master, ...stock, ...transfers, Unit, User, Location });
+const damageLoss = require('./damage-loss.model')(sequelize, DataTypes, { ...master, ...borrow, Unit, User, Location });
+const damageRepair = require('./damage-repair.model')(sequelize, DataTypes, { ...damageLoss, ...master, ...stock, User });
+const lossFollowup = require('./loss-followup.model')(sequelize, DataTypes, { ...damageLoss, ...master, ...stock, Unit, User, Location });
 
 Role.hasMany(User, { foreignKey: "role_id", as: "users", onDelete: "RESTRICT" });
 User.belongsTo(Role, { foreignKey: "role_id", as: "role", onDelete: "RESTRICT" });
@@ -18,4 +21,4 @@ User.belongsTo(Unit, { foreignKey: "unit_id", as: "unit", onDelete: "RESTRICT" }
 Unit.belongsTo(Unit, { foreignKey: "parent_id", as: "parent", onDelete: "RESTRICT" });
 Unit.hasMany(Unit, { foreignKey: "parent_id", as: "children", onDelete: "RESTRICT" });
 
-module.exports = { sequelize, Role, Unit, User, Location, ...master, ...stock, ...transfers, ...borrow };
+module.exports = { sequelize, Role, Unit, User, Location, ...master, ...stock, ...transfers, ...borrow, ...damageLoss, ...damageRepair, ...lossFollowup };

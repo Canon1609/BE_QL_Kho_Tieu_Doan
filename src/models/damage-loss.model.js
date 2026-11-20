@@ -1,0 +1,9 @@
+module.exports = (sequelize, D, { Material, MaterialSource, ConditionLevel, Unit, User, Location, BorrowLine }) => {
+ const Report=sequelize.define('DamageLossReport',{id:{type:D.BIGINT.UNSIGNED,primaryKey:true,autoIncrement:true},code:{type:D.STRING(64),allowNull:false,unique:true},incident_type:{type:D.STRING(16),allowNull:false},unit_id:{type:D.BIGINT.UNSIGNED,allowNull:false},discovered_on:{type:D.DATEONLY,allowNull:false},description:{type:D.TEXT,allowNull:false},note:D.TEXT,status:{type:D.STRING(16),allowNull:false,defaultValue:'DRAFT'},created_by:{type:D.BIGINT.UNSIGNED,allowNull:false},submitted_at:D.DATE,decided_by:D.BIGINT.UNSIGNED,decided_at:D.DATE,decision_note:D.TEXT},{tableName:'damage_loss_reports'});
+ const Item=sequelize.define('DamageLossItem',{id:{type:D.BIGINT.UNSIGNED,primaryKey:true,autoIncrement:true},report_id:{type:D.BIGINT.UNSIGNED,allowNull:false},material_id:{type:D.BIGINT.UNSIGNED,allowNull:false},source_id:{type:D.BIGINT.UNSIGNED,allowNull:false},condition_id:D.BIGINT.UNSIGNED,location_id:{type:D.BIGINT.UNSIGNED,allowNull:false},borrow_line_id:D.BIGINT.UNSIGNED,quantity:{type:D.BIGINT.UNSIGNED,allowNull:false}},{tableName:'damage_loss_items'});
+ Report.hasMany(Item,{foreignKey:'report_id',as:'items',onDelete:'RESTRICT'}); Item.belongsTo(Report,{foreignKey:'report_id',onDelete:'RESTRICT'});
+ for(const [name,Model,as] of [['material_id',Material,'material'],['source_id',MaterialSource,'source'],['condition_id',ConditionLevel,'condition'],['location_id',Location,'location'],['borrow_line_id',BorrowLine,'borrowLine']]) if(Model) Item.belongsTo(Model,{foreignKey:name,as,onDelete:'RESTRICT'});
+ Report.belongsTo(Unit,{foreignKey:'unit_id',as:'unit',onDelete:'RESTRICT'});
+ Report.belongsTo(User,{foreignKey:'created_by',as:'creator',onDelete:'RESTRICT'}); Report.belongsTo(User,{foreignKey:'decided_by',as:'decider',onDelete:'RESTRICT'});
+ return {DamageLossReport:Report,DamageLossItem:Item};
+};
