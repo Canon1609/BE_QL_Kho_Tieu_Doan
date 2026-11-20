@@ -10,6 +10,9 @@ const locationRoutes = require('./routes/location.routes');
 const borrowRoutes = require('./routes/borrow.routes');
 const searchRoutes = require('./routes/search.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
+const damageLossRoutes = require('./routes/damage-loss.routes');
+const lossFollowupRoutes = require('./routes/loss-followup.routes');
+const damageRepairRoutes = require('./routes/damage-repair.routes');
 const { notFound, errorHandler } = require("./middlewares/error.middleware");
 
 const app = express();
@@ -26,6 +29,9 @@ app.use('/api/v1/locations', locationRoutes);
 app.use('/api/v1/borrow', borrowRoutes);
 app.use('/api/v1/search/materials', searchRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/damage-loss', damageLossRoutes);
+app.use('/api/v1/loss-followup', lossFollowupRoutes);
+app.use('/api/v1/damage-repair', damageRepairRoutes);
 app.use(notFound);
 app.use(errorHandler);
 

@@ -219,10 +219,10 @@ async function history(unitId, user, q) {
   if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
   const unit = await Unit.findByPk(unitId);
   if (!unit || !recipientTypes.includes(unit.type) || !unit.is_active) fail(403, 'Forbidden');
-  const where = { unit_id: unitId, reference_type: { [Op.in]: ['STOCK_TRANSFER', 'BORROW_DELIVERY', 'BORROW_RETURN'] } };
+  const where = { unit_id: unitId, reference_type: { [Op.in]: ['STOCK_TRANSFER', 'BORROW_DELIVERY', 'BORROW_RETURN', 'DAMAGE_LOSS', 'DAMAGE_REPAIR', 'LOSS_RECOVERY'] } };
   if (q.material_id) where.material_id = q.material_id;
   const page = Number(q.page || 1), limit = 20;
-  const { rows, count } = await Ledger.findAndCountAll({ where, include: parts, order: [['id', 'DESC']], limit, offset: (page - 1) * limit });
+  const { rows, count } = await Ledger.findAndCountAll({ where, include: parts, order: [['occurred_at', 'DESC'], ['id', 'DESC']], limit, offset: (page - 1) * limit });
   const places = await Location.findAll({ where: { id: [...new Set(rows.map(r => r.location_id).filter(Boolean))] }, attributes: ['id', 'code', 'name', 'parent_location_id'] });
   return { items: rows.map(r => ({ ...plain(r), location: places.find(p => String(p.id) === String(r.location_id)) || null })), total: count, page, limit };
 }
