@@ -13,6 +13,7 @@ const dashboardRoutes = require('./routes/dashboard.routes');
 const damageLossRoutes = require('./routes/damage-loss.routes');
 const lossFollowupRoutes = require('./routes/loss-followup.routes');
 const damageRepairRoutes = require('./routes/damage-repair.routes');
+const reportingRoutes = require('./routes/reporting.routes');
 const { notFound, errorHandler } = require("./middlewares/error.middleware");
 
 const app = express();
@@ -32,6 +33,8 @@ app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/damage-loss', damageLossRoutes);
 app.use('/api/v1/loss-followup', lossFollowupRoutes);
 app.use('/api/v1/damage-repair', damageRepairRoutes);
+app.use('/api/v1/reports', reportingRoutes);
+app.use('/api/v1/stocktakes', (req,res)=>res.status(410).json({success:false,message:'Chức năng kiểm kê kho hiện không được cung cấp.'}));
 app.use(notFound);
 app.use(errorHandler);
 
