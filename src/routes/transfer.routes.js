@@ -6,6 +6,7 @@ const rootOnly = (req, res, next) => req.user.unit?.code === 'BATTALION_5' && re
   ? next() : res.status(403).json({ success: false, message: 'Forbidden', data: null });
 router.use(authenticate);
 router.get('/company-assets/:unitId', authorizeRoles('BATTALION_ADMIN', 'COMPANY_ADMIN'), controller.assets);
+router.get('/company-assets/:unitId/locations', authorizeRoles('BATTALION_ADMIN', 'COMPANY_ADMIN'), controller.assetLocations);
 router.get('/company-assets/:unitId/history', authorizeRoles('BATTALION_ADMIN', 'COMPANY_ADMIN'), controller.history);
 router.use(authorizeRoles('BATTALION_ADMIN'), rootOnly);
 router.get('/company-units', controller.units);

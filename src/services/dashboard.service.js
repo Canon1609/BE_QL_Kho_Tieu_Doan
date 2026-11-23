@@ -201,6 +201,11 @@ async function getDashboard(query, user) {
     materialId: String(row.material_id), materialCode: row.material_code, materialName: row.material_name, measure: row.measure_name,
     physical: row.physical, unbound: row.unbound, borrowed: row.borrowed }));
   const borrow = requests[0] || {};
+  const damageWork = await sequelize.query(`SELECT r.incident_type, COUNT(DISTINCT r.id) total FROM damage_loss_reports r WHERE r.unit_id IN (:units) AND r.status='SUBMITTED' GROUP BY r.incident_type`, { replacements: { units: unitIds }, type: QueryTypes.SELECT });
+  const repairWork = await sequelize.query(`SELECT COUNT(DISTINCT a.id) total FROM damage_repair_allocations a JOIN damage_repair_cases c ON c.id=a.case_id JOIN damage_loss_reports r ON r.id=c.report_id WHERE r.unit_id IN (:units) AND a.status='AWAITING_INSPECTION' AND EXISTS (SELECT 1 FROM users u JOIN roles ro ON ro.id=u.role_id WHERE u.id=:userId AND ro.code='BATTALION_ADMIN')`, { replacements: { units: unitIds, userId: user.id }, type: QueryTypes.SELECT });
+  const recoveryWork = await sequelize.query(`SELECT COUNT(DISTINCT rec.id) total FROM loss_recoveries rec JOIN damage_loss_reports r ON r.id=rec.report_id WHERE r.unit_id IN (:units) AND rec.status='PENDING' AND EXISTS (SELECT 1 FROM users u JOIN roles ro ON ro.id=u.role_id WHERE u.id=:userId AND ro.code='BATTALION_ADMIN')`,  { replacements: { units: unitIds, userId: user.id }, type: QueryTypes.SELECT });
+  const damageCounts = { damage: 0, loss: 0 };
+  for (const row of damageWork) if (row.incident_type === 'DAMAGE') damageCounts.damage = Number(row.total || 0); else if (row.incident_type === 'LOSS') damageCounts.loss = Number(row.total || 0);
   return {
     scope: { unitIds, selectedUnitId: query.unit_id || null },
     current: {
@@ -208,6 +213,10 @@ async function getDashboard(query, user) {
       pendingRequests: Number(borrow.pending || 0),
       outstandingBorrowRequests: Number(borrow.outstanding || 0),
       overdueBorrowRequests: Number(borrow.overdue || 0),
+      pendingDamageReports: damageCounts.damage,
+      pendingLossReports: damageCounts.loss,
+      pendingRepairInspections: Number(repairWork[0]?.total || 0),
+      pendingLossRecoveries: Number(recoveryWork[0]?.total || 0),
     },
     distribution,
     activity: { year: Number(query.year || vietnamToday().slice(0, 4)), months: activity },

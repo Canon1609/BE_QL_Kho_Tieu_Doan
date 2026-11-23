@@ -33,6 +33,7 @@ module.exports = {
   update: handle(async (req, res) => { if (!id(req.params.id)) bad(); send(res, await service.save(req.params.id, validate(req.body), req.user)); }),
   remove: handle(async (req, res) => { if (!id(req.params.id)) bad(); await service.remove(req.params.id, req.user); send(res, null); }),
   post: handle(async (req, res) => { if (!id(req.params.id) || Object.keys(req.body || {}).length) bad(); send(res, await service.post(req.params.id, req.user)); }),
-  assets: handle(async (req, res) => { if (!id(req.params.unitId)) bad(); send(res, await service.assets(req.params.unitId, req.user, query(req.query, ['search', 'material_id']))); }),
+  assets: handle(async (req, res) => { if (!id(req.params.unitId)) bad(); send(res, await service.assets(req.params.unitId, req.user, query(req.query, ['search', 'material_id', 'location_id']))); }),
+  assetLocations: handle(async (req, res) => { if (!id(req.params.unitId)) bad(); send(res, await service.assetLocations(req.params.unitId, req.user)); }),
   history: handle(async (req, res) => { if (!id(req.params.unitId)) bad(); send(res, await service.history(req.params.unitId, req.user, query(req.query, ['material_id', 'page']))); }),
 };
