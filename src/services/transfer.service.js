@@ -2,7 +2,7 @@ const { Op, UniqueConstraintError, ForeignKeyConstraintError } = require('sequel
 const { sequelize, StockTransfer: Transfer, StockTransferItem: Item, StockLedgerEntry: Ledger, Material, MaterialSource: Source, ConditionLevel: Condition, Unit, Location, MaterialCategory, UnitOfMeasure } = require('../models');
 const { canAccessUnit } = require('./unitScope.service');
 const ApiError = require('../utils/ApiError');
-const { legacyLocation, holdingWhere } = require('./location.service');
+const { legacyLocation, holdingWhere, descendantIds } = require('./location.service');
 const recipientTypes = ['COMPANY', 'BATTALION_HQ', 'KITCHEN'];
 const { requireBalance } = require('./borrow-balance.service');
 const fail = (status, message) => { throw new ApiError(status, message); };
@@ -188,21 +188,41 @@ async function list(q) {
   return { items: rows.map(plain), total: count, page, limit };
 }
 async function units(user) {
-  await root(user);
+  const battalion = await root(user);
   const rows = await Unit.findAll({ where: { parent_id: user.unit_id, type: 'COMPANY', is_active: true }, attributes: ['id', 'code', 'name'], order: [['name', 'ASC']] });
-  return rows.map(plain);
+  return [plain(battalion), ...rows.map(plain)];
+}
+async function assetLocations(unitId, user) {
+  if (!await canAccessUnit(user, unitId)) fail(403, 'Forbidden');
+  const unit = await Unit.findByPk(unitId);
+  if (!unit || !unit.is_active) fail(403, 'Forbidden');
+  if (user.role.code === 'COMPANY_ADMIN') {
+    const rows = await Ledger.findAll({ where: { unit_id: unitId, location_id: { [Op.ne]: null } }, attributes: ['location_id'], group: ['location_id'], raw: true });
+    return Location.findAll({ where: { id: rows.map(r => r.location_id), is_active: true }, attributes: ['id', 'name', 'code', 'parent_location_id'], order: [['name', 'ASC']] });
+  }
+  const roots = await Location.findAll({ where: { parent_location_id: null, is_active: true }, attributes: ['id'], raw: true });
+  const ids = [...new Set((await Promise.all(roots.map(r => descendantIds(r.id)))).flat())];
+  return Location.findAll({ where: { id: ids, is_active: true }, attributes: ['id', 'name', 'code', 'parent_location_id'], order: [['name', 'ASC']] });
 }
 async function assets(unitId, user, q) {
-  if (!await canAccessUnit(user, unitId) || user.role.code === 'BATTALION_ADMIN' && String(user.unit_id) === String(unitId)) fail(403, 'Forbidden');
+  if (!await canAccessUnit(user, unitId)) fail(403, 'Forbidden');
+  let scopedLocationIds;
+  if (q.location_id) {
+    const allowed = await assetLocations(unitId, user);
+    if (!allowed.some(l => String(l.id) === String(q.location_id))) fail(403, 'Forbidden');
+    scopedLocationIds = await descendantIds(q.location_id);
+  }
+  const unitAccess = user.role.code === 'BATTALION_ADMIN' && String(unitId) === String(user.unit_id);
   const unit = await Unit.findByPk(unitId);
-  if (!unit || !recipientTypes.includes(unit.type) || !unit.is_active) fail(403, 'Forbidden');
-  const rows = await Ledger.findAll({ where: { unit_id: unitId, ...(q.material_id ? { material_id: q.material_id } : {}) },
+  if (!unit || !(recipientTypes.includes(unit.type) || unitAccess && unit.type === 'BATTALION') || !unit.is_active) fail(403, 'Forbidden');
+  const locationFilter = q.location_id ? { location_id: { [Op.in]: scopedLocationIds } } : {};
+  const rows = await Ledger.findAll({ where: { unit_id: unitId, ...locationFilter, ...(q.material_id ? { material_id: q.material_id } : {}) },
     attributes: ['material_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']],
     group: ['material_id', 'source_id', 'condition_id'], raw: true });
   const ids = [...new Set(rows.map(r => String(r.material_id)))];
   const materials = await Material.findAll({ where: { id: ids.length ? ids : [0], ...(q.search ? { [Op.or]: [{ code: { [Op.like]: `%${q.search}%` } }, { name: { [Op.like]: `%${q.search}%` } }] } : {}) },
     include: [ref(MaterialCategory, 'category'), ref(UnitOfMeasure, 'unit')], order: [['code', 'ASC']] });
-  const locationRows = await Ledger.findAll({ where: { unit_id: unitId, ...(q.material_id ? { material_id: q.material_id } : {}) }, attributes: ['material_id', 'location_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']], group: ['material_id', 'location_id', 'source_id', 'condition_id'], raw: true });
+  const locationRows = await Ledger.findAll({ where: { unit_id: unitId, ...locationFilter, ...(q.material_id ? { material_id: q.material_id } : {}) }, attributes: ['material_id', 'location_id', 'source_id', 'condition_id', [sequelize.fn('SUM', sequelize.col('quantity_delta')), 'quantity']], group: ['material_id', 'location_id', 'source_id', 'condition_id'], raw: true });
   const locations = await Location.findAll({ where: { id: [...new Set(locationRows.map(r => r.location_id).filter(Boolean))] }, attributes: ['id', 'code', 'name', 'parent_location_id'] });
   const [sources, conditions] = await Promise.all([Source.findAll({ where: { id: [...new Set(rows.map(r => r.source_id))] } }), Condition.findAll({ where: { id: [...new Set(rows.map(r => r.condition_id).filter(Boolean))] } })]);
   return materials.map(m => {
@@ -226,4 +246,4 @@ async function history(unitId, user, q) {
   const places = await Location.findAll({ where: { id: [...new Set(rows.map(r => r.location_id).filter(Boolean))] }, attributes: ['id', 'code', 'name', 'parent_location_id'] });
   return { items: rows.map(r => ({ ...plain(r), location: places.find(p => String(p.id) === String(r.location_id)) || null })), total: count, page, limit };
 }
-module.exports = { get, save, remove, post, list, units, assets, history };
+module.exports = { get, save, remove, post, list, units, assets, assetLocations, history };
